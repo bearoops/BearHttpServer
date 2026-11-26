@@ -19,7 +19,7 @@ let port = try await server.start()
 // Serve requests at http://127.0.0.1:\(port)
 
 // When finished:
-server.stop()
+await server.stop()
 ```
 
 To bind a specific host or port:

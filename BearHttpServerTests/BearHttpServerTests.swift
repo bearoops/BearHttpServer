@@ -17,13 +17,12 @@ struct BearHttpServerTests {
         }
 
         let port = try await server.start()
-        defer { server.stop() }
-
         let url = URL(string: "http://127.0.0.1:\(port)/hello")!
         let (data, response) = try await URLSession.shared.data(from: url)
 
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(String(decoding: data, as: UTF8.self) == "hello from BearHttpServer")
+        await server.stop()
     }
 
     @Test func postRequestBodyIsDeliveredToHandler() async throws {
@@ -39,8 +38,6 @@ struct BearHttpServerTests {
         }
 
         let port = try await server.start()
-        defer { server.stop() }
-
         var urlRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/echo")!)
         urlRequest.httpMethod = "POST"
         urlRequest.httpBody = expected
@@ -49,19 +46,20 @@ struct BearHttpServerTests {
 
         #expect((response as? HTTPURLResponse)?.statusCode == 201)
         #expect(data == expected)
+        await server.stop()
     }
 
     @Test func serverCanBeRestartedAfterStop() async throws {
         let server = HTTPServer { _ in HTTPResponse.text("ok") }
 
         _ = try await server.start()
-        server.stop()
+        await server.stop()
         let secondPort = try await server.start()
-        defer { server.stop() }
 
         let url = URL(string: "http://127.0.0.1:\(secondPort)/")!
         let (data, _) = try await URLSession.shared.data(from: url)
 
         #expect(String(decoding: data, as: UTF8.self) == "ok")
+        await server.stop()
     }
 }
