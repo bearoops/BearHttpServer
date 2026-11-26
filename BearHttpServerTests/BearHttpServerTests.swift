@@ -146,6 +146,21 @@ struct BearHttpServerTests {
         #expect(!raw.contains("\r\nX-Injected2"))
     }
 
+    @Test func http10RequestGetsHttp10Response() async throws {
+        let server = HTTPServer { request in
+            #expect(request.version == .http10)
+            return HTTPResponse.text("ok")
+        }
+
+        let port = try await server.start()
+        let request = "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n"
+        let raw = try await rawResponse(port: port, request: request)
+        await server.stop()
+
+        #expect(raw.hasPrefix("HTTP/1.0 200 OK\r\n"))
+        #expect(raw.localizedCaseInsensitiveContains("connection: close"))
+    }
+
     @Test func noContentResponseOmitsBodyAndContentLength() async throws {
         let server = HTTPServer { _ in
             HTTPResponse(status: .noContent, body: Data("ignored".utf8))
@@ -201,6 +216,16 @@ struct BearHttpServerTests {
         await server.stop()
 
         #expect(raw.hasPrefix("HTTP/1.1 501 Not Implemented"))
+    }
+
+    @Test func http10ErrorResponseUsesHttp10StatusLine() async throws {
+        let server = HTTPServer { _ in HTTPResponse.text("unexpected") }
+        let port = try await server.start()
+        let request = "POST / HTTP/1.0\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+        let raw = try await rawResponse(port: port, request: request)
+        await server.stop()
+
+        #expect(raw.hasPrefix("HTTP/1.0 501 Not Implemented"))
     }
 
     @Test func oversizedHeadersAreRejected() async throws {

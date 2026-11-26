@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Responses now echo the request's HTTP version; HTTP/1.0 requests receive an
+  `HTTP/1.0` status line instead of `HTTP/1.1`.
+- Reuse a single `DateFormatter` for the `Date` header instead of constructing
+  one per response.
+- Replaced all `NSLock` usage with actors: the shared date formatter, the idle
+  timeout guard and the Objective-C one-shot completion are now serialized by
+  Swift Concurrency. Timeouts use `Task.sleep` instead of `DispatchWorkItem`.
+- Stop allowing local endpoint reuse so a bind conflict fails loudly rather
+  than letting another socket silently share the port.
+
+### Documentation
+
+- Replace DocC symbol links in the README with plain Markdown API descriptions.
+
 ## [0.1.0] - 2026-11-26
 
 ### Added

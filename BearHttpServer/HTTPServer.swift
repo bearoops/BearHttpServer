@@ -50,8 +50,9 @@ public actor HTTPServer {
         }
 
         let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-
+        // Intentionally do not set `allowLocalEndpointReuse`. Allowing reuse
+        // lets another socket bind the same address/port, which can silently
+        // steal connections. A bind conflict should fail loudly instead.
         let port = NWEndpoint.Port(rawValue: configuration.port) ?? .any
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(configuration.host),

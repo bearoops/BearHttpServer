@@ -178,42 +178,22 @@ private final class SendableCompletionBox<Value>: @unchecked Sendable {
     }
 }
 
-/// Resumes a request continuation exactly once, with a timeout fallback.
-private final class ObjCHTTPResponseOnce: @unchecked Sendable {
-    private let lock = NSLock()
+/// Resumes a request continuation exactly once.
+///
+/// An actor serializes the one-shot check, replacing the previous lock. The
+/// timeout is owned by a detached task in the caller instead of by the actor:
+/// an actor cannot capture `self` in an escaping task from its nonisolated
+/// initializer under Swift 6. Whichever path reaches `complete` first wins.
+private actor ObjCHTTPResponseOnce {
     private var continuation: CheckedContinuation<HTTPResponse, Error>?
-    private var timeoutWork: DispatchWorkItem?
 
-    init(timeout: TimeInterval, continuation: CheckedContinuation<HTTPResponse, Error>) {
+    init(continuation: CheckedContinuation<HTTPResponse, Error>) {
         self.continuation = continuation
-        guard timeout > 0 else { return }
-
-        // Strong capture is intentional: the work item must keep the one-shot
-        // wrapper alive until it resumes the continuation. complete() cancels
-        // and releases the item, breaking the cycle on the normal path.
-        let work = DispatchWorkItem { [self] in
-            complete(
-                HTTPResponse.text("Request handler timed out.", status: .gatewayTimeout)
-            )
-        }
-        timeoutWork = work
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: work)
     }
 
-    func complete(_ response: ObjCHTTPResponse) {
-        complete(response.swiftResponse)
-    }
-
-    private func complete(_ response: HTTPResponse) {
-        lock.lock()
-        guard let continuation else {
-            lock.unlock()
-            return
-        }
+    func complete(_ response: HTTPResponse) {
+        guard let continuation else { return }
         self.continuation = nil
-        timeoutWork?.cancel()
-        timeoutWork = nil
-        lock.unlock()
         continuation.resume(returning: response)
     }
 }
@@ -262,9 +242,32 @@ public final class ObjCHTTPServer: NSObject, @unchecked Sendable {
         ) { request in
             let objcRequest = ObjCHTTPRequest(request)
             return try await withCheckedThrowingContinuation { continuation in
-                let once = ObjCHTTPResponseOnce(timeout: timeout, continuation: continuation)
+                let once = ObjCHTTPResponseOnce(continuation: continuation)
+
+                // Own the timeout outside the actor. Cancellation must return
+                // early: a cancelled `Task.sleep` throws, and falling through
+                // would still fire the 504 after the handler already answered.
+                let timeoutTask = Task.detached {
+                    guard timeout > 0 else { return }
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    } catch {
+                        return
+                    }
+                    await once.complete(
+                        HTTPResponse.text("Request handler timed out.", status: .gatewayTimeout)
+                    )
+                }
+
                 box.handler(objcRequest) { response in
-                    once.complete(response)
+                    // The Objective-C block is synchronous and non-Sendable;
+                    // snapshot its fields into a Sendable value before hopping
+                    // to the once actor.
+                    let snapshot = response.swiftResponse
+                    Task {
+                        await once.complete(snapshot)
+                        timeoutTask.cancel()
+                    }
                 }
             }
         }

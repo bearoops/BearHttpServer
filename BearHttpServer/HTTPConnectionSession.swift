@@ -6,14 +6,33 @@
 import Foundation
 import Network
 
+/// Shared RFC 1123 date formatter. Constructing a `DateFormatter` on every
+/// response is expensive, so a single instance is reused. As an actor it
+/// serializes access without a lock, which also keeps `DateFormatter` (a
+/// non-Sendable type) confined to one isolation domain.
+private actor HTTPDateFormatter {
+    private let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return formatter
+    }()
+
+    func string(from date: Date) -> String {
+        formatter.string(from: date)
+    }
+}
+
 /// Cancels a connection after a stretch of inactivity. Arm before waiting for
 /// more bytes, disarm as soon as bytes arrive; cancelling makes the pending
 /// `NWConnection.receive` completion return an error and end the session.
-private final class IdleTimeoutGuard: @unchecked Sendable {
-    private let lock = NSLock()
+/// An actor serializes arm/disarm, and a cancellable `Task` replaces the old
+/// dispatch work item so the timeout uses structured concurrency throughout.
+private actor IdleTimeoutGuard {
     private let connection: NWConnection
     private let timeout: TimeInterval
-    private var work: DispatchWorkItem?
+    private var work: Task<Void, Never>?
 
     init(connection: NWConnection, timeout: TimeInterval) {
         self.connection = connection
@@ -22,21 +41,23 @@ private final class IdleTimeoutGuard: @unchecked Sendable {
 
     func arm() {
         guard timeout > 0 else { return }
-        lock.lock()
         work?.cancel()
-        let item = DispatchWorkItem { [weak connection] in
-            connection?.cancel()
+        let socket = connection
+        work = Task {
+            // A cancelled sleep throws; return so disarm/arm cannot leave a
+            // stale timer that cancels a socket which has since seen traffic.
+            do {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            } catch {
+                return
+            }
+            socket.cancel()
         }
-        work = item
-        lock.unlock()
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: item)
     }
 
     func disarm() {
-        lock.lock()
         work?.cancel()
         work = nil
-        lock.unlock()
     }
 }
 
@@ -67,8 +88,11 @@ final class HTTPConnectionSession: @unchecked Sendable {
         )
         // Once the session ends, actively close the socket instead of relying
         // on deallocation. This is what makes `Connection: close` effective.
+        // Swift forbids `await` inside `defer`, so hop to a task to disarm the
+        // actor on every exit; cancelling the socket ends any pending receive
+        // immediately regardless.
         defer {
-            idleGuard.disarm()
+            Task { await idleGuard.disarm() }
             connection.cancel()
         }
 
@@ -78,6 +102,7 @@ final class HTTPConnectionSession: @unchecked Sendable {
                 let response = await handler(request)
                 let shouldContinue = await send(
                     response,
+                    version: request.version,
                     close: closeAfterResponse,
                     includeBody: request.method != .head
                 )
@@ -85,15 +110,15 @@ final class HTTPConnectionSession: @unchecked Sendable {
                     return
                 }
 
-            case .error(let status, let message):
-                await sendError(status: status, message: message)
+            case .error(let status, let message, let version):
+                await sendError(status: status, message: message, version: version)
                 return
 
             case .needMore:
-                idleGuard.arm()
+                await idleGuard.arm()
                 do {
                     let (chunk, isComplete) = try await receive()
-                    idleGuard.disarm()
+                    await idleGuard.disarm()
                     buffer.append(chunk)
                     if isComplete {
                         return
@@ -119,7 +144,12 @@ final class HTTPConnectionSession: @unchecked Sendable {
     }
 
     @discardableResult
-    private func send(_ response: HTTPResponse, close: Bool, includeBody: Bool) async -> Bool {
+    private func send(
+        _ response: HTTPResponse,
+        version: HTTPVersion,
+        close: Bool,
+        includeBody: Bool
+    ) async -> Bool {
         let status = response.status
         // 1xx, 204 and 304 must not carry a message body or Content-Length.
         // HEAD still reports the length a GET would have returned.
@@ -131,11 +161,13 @@ final class HTTPConnectionSession: @unchecked Sendable {
 
         var payload = Data()
         let reasonPhrase = sanitizedHTTPField(status.reasonPhrase)
-        payload.append(contentsOf: "HTTP/1.1 \(status.code) \(reasonPhrase)\r\n".utf8)
+        // Echo the request's HTTP version. An HTTP/1.0 client must receive an
+        // HTTP/1.0 status line, not one claiming HTTP/1.1.
+        payload.append(contentsOf: "\(version.rawValue) \(status.code) \(reasonPhrase)\r\n".utf8)
 
         var headers = response.headers
         headers["server"] = configuration.serverHeader
-        headers["date"] = Self.currentHTTPDate()
+        headers["date"] = await Self.currentHTTPDate()
         if statusAllowsBody {
             headers["content-length"] = String(bodyForLength.count)
         } else {
@@ -197,26 +229,29 @@ final class HTTPConnectionSession: @unchecked Sendable {
         }
     }
 
-    private func sendError(status: HTTPStatusCode, message: String) async {
+    private func sendError(
+        status: HTTPStatusCode,
+        message: String,
+        version: HTTPVersion
+    ) async {
         _ = await send(
             HTTPResponse.text(message, status: status),
+            version: version,
             close: true,
             includeBody: true
         )
     }
 
-    private static func currentHTTPDate() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
-        return formatter.string(from: Date())
+    private static let dateFormatter = HTTPDateFormatter()
+
+    private static func currentHTTPDate() async -> String {
+        await dateFormatter.string(from: Date())
     }
 
     private enum ParseResult {
         case needMore
         case request(HTTPRequest, close: Bool)
-        case error(HTTPStatusCode, String)
+        case error(HTTPStatusCode, String, HTTPVersion)
     }
 
     private static func parseNextRequest(
@@ -225,13 +260,13 @@ final class HTTPConnectionSession: @unchecked Sendable {
     ) -> ParseResult {
         guard let headerEnd = findHeaderEnd(in: buffer) else {
             if buffer.count > configuration.maxHeaderBytes {
-                return .error(.requestHeaderFieldsTooLarge, "Request headers are too large.")
+                return .error(.requestHeaderFieldsTooLarge, "Request headers are too large.", .http11)
             }
             return .needMore
         }
 
         if headerEnd > configuration.maxHeaderBytes {
-            return .error(.requestHeaderFieldsTooLarge, "Request headers are too large.")
+            return .error(.requestHeaderFieldsTooLarge, "Request headers are too large.", .http11)
         }
 
         let bodyStart = headerEnd + headerSeparator.count
@@ -239,12 +274,12 @@ final class HTTPConnectionSession: @unchecked Sendable {
             data: buffer.subdata(in: 0..<headerEnd),
             encoding: .utf8
         ) else {
-            return .error(.badRequest, "Request headers are not valid UTF-8.")
+            return .error(.badRequest, "Request headers are not valid UTF-8.", .http11)
         }
 
         let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
-            return .error(.badRequest, "Missing request line.")
+            return .error(.badRequest, "Missing request line.", .http11)
         }
 
         let components = requestLine.split(
@@ -253,7 +288,7 @@ final class HTTPConnectionSession: @unchecked Sendable {
             omittingEmptySubsequences: true
         )
         guard components.count == 3 else {
-            return .error(.badRequest, "Malformed request line.")
+            return .error(.badRequest, "Malformed request line.", .http11)
         }
 
         let method = HTTPMethod(rawValue: String(components[0]))
@@ -265,35 +300,35 @@ final class HTTPConnectionSession: @unchecked Sendable {
             guard !line.isEmpty else { break }
             let pair = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard pair.count == 2 else {
-                return .error(.badRequest, "Malformed request header.")
+                return .error(.badRequest, "Malformed request header.", version)
             }
             let name = String(pair[0]).trimmingCharacters(in: .whitespaces)
             let value = String(pair[1]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else {
-                return .error(.badRequest, "Malformed request header name.")
+                return .error(.badRequest, "Malformed request header name.", version)
             }
             headers.append(name, value: value)
         }
 
         if let transferEncoding = headers["transfer-encoding"],
            transferEncoding.lowercased().contains("chunked") {
-            return .error(.notImplemented, "Chunked request bodies are not supported.")
+            return .error(.notImplemented, "Chunked request bodies are not supported.", version)
         }
 
         var contentLength = 0
         if let rawContentLength = headers["content-length"] {
             let trimmed = rawContentLength.trimmingCharacters(in: .whitespaces)
             guard let value = Int(trimmed), value >= 0 else {
-                return .error(.badRequest, "Invalid Content-Length.")
+                return .error(.badRequest, "Invalid Content-Length.", version)
             }
             contentLength = value
         }
 
         guard contentLength <= configuration.maxBodyBytes else {
-            return .error(.payloadTooLarge, "Request body is too large.")
+            return .error(.payloadTooLarge, "Request body is too large.", version)
         }
         guard contentLength <= Int.max - bodyStart else {
-            return .error(.payloadTooLarge, "Request body is too large.")
+            return .error(.payloadTooLarge, "Request body is too large.", version)
         }
 
         let requestEnd = bodyStart + contentLength

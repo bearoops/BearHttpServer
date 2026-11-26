@@ -37,7 +37,9 @@ idle closing. Pass `host: "::1"` to bind the IPv6 loopback instead.
 
 The current implementation supports HTTP/1.0 and HTTP/1.1 requests with
 `Content-Length` bodies, keep-alive connections, and `HEAD` responses without a
-body. Chunked request bodies are rejected with `501 Not Implemented`.
+body. Responses use the same HTTP version as the request: an HTTP/1.0 client
+receives an `HTTP/1.0` status line. Chunked request bodies are rejected with
+`501 Not Implemented`.
 
 ## Swift Package Manager
 
@@ -102,22 +104,21 @@ replaced with spaces so untrusted values cannot inject extra header lines.
 Statuses that cannot carry a body (`1xx`, `204`, `304`) omit `Content-Length`
 and the body; `HEAD` keeps `Content-Length` but sends no body.
 
-## Topics
+## API overview
 
-### Servers
+### Server
 
-- ``HTTPServer``
-- ``HTTPServerConfiguration``
-- ``HTTPServerError``
+- `HTTPServer` — the actor that accepts connections and dispatches requests.
+- `HTTPServerConfiguration` — host, port, size limits and idle timeout.
+- `HTTPServerError` — errors thrown while starting the server.
 
-### HTTP
+### HTTP types
 
-- ``HTTPRequest``
-- ``HTTPResponse``
-- ``HTTPHeaders``
-- ``HTTPMethod``
-- ``HTTPStatusCode``
-- ``HTTPVersion``
+- `HTTPRequest` / `HTTPResponse` — the values passed to and returned from a handler.
+- `HTTPHeaders` — case-insensitive header storage.
+- `HTTPMethod` / `HTTPVersion` / `HTTPStatusCode` — request and response metadata.
+
+Each public type also has inline documentation available via Xcode's Quick Help.
 
 ## License
 
