@@ -35,9 +35,30 @@ The current implementation supports HTTP/1.0 and HTTP/1.1 requests with
 `Content-Length` bodies, keep-alive connections, and `HEAD` responses without a
 body. Chunked request bodies are rejected with `501 Not Implemented`.
 
+## Swift Package Manager
+
+The repository includes a `Package.swift`, so the library can be built and
+tested with SwiftPM:
+
+```sh
+swift build
+swift test
+```
+
+To depend on a local checkout:
+
+```swift
+dependencies: [
+    .package(path: "../BearHttpServer")
+]
+```
+
+`swift build` and `swift test` may need `--disable-sandbox` in restricted
+environments.
+
 ## Objective-C support
 
-The framework installs `BearHttpServer-Swift.h` and exposes the `BEAR`-prefixed
+The framework installs `BearHttpServer-Swift.h` and exposes the `BR`-prefixed
 classes for Objective-C clients:
 
 ```objc
