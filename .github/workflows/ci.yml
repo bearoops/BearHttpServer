@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  swiftpm:
+    name: SwiftPM build and test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build and test
+        run: swift test
+
+  xcode:
+    name: Xcode framework build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build framework
+        run: >-
+          xcodebuild -project BearHttpServer.xcodeproj
+          -scheme BearHttpServer
+          -destination 'platform=macOS'
+          CODE_SIGNING_ALLOWED=NO
+          build

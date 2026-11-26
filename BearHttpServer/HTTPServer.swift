@@ -61,10 +61,15 @@ public actor HTTPServer {
         let newListener = try NWListener(using: parameters)
         listener = newListener
 
-        newListener.stateUpdateHandler = { [weak self] state in
+        // Weakly capture the listener as well as self: a strong capture here
+        // would create a listener -> handler -> listener retain cycle that
+        // survives a failed listener that never reaches stop().
+        newListener.stateUpdateHandler = { [weak self, weak newListener] state in
+            guard let newListener else { return }
             Task { await self?.handleListenerState(state, from: newListener) }
         }
-        newListener.newConnectionHandler = { [weak self] connection in
+        newListener.newConnectionHandler = { [weak self, weak newListener] connection in
+            guard let newListener else { return }
             Task { await self?.accept(connection, from: newListener) }
         }
 
@@ -119,6 +124,11 @@ public actor HTTPServer {
 
     private func accept(_ connection: NWConnection, from listener: NWListener) async {
         guard self.listener === listener else {
+            connection.cancel()
+            return
+        }
+
+        guard connections.count < configuration.maxConnections else {
             connection.cancel()
             return
         }

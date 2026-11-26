@@ -31,14 +31,18 @@ let server = HTTPServer(configuration: configuration) { request in
 }
 ```
 
+`HTTPServerConfiguration` also exposes `maxConnections` and
+`connectionIdleTimeout` to bound resources; set the timeout to `0` to disable
+idle closing. Pass `host: "::1"` to bind the IPv6 loopback instead.
+
 The current implementation supports HTTP/1.0 and HTTP/1.1 requests with
 `Content-Length` bodies, keep-alive connections, and `HEAD` responses without a
 body. Chunked request bodies are rejected with `501 Not Implemented`.
 
 ## Swift Package Manager
 
-The repository includes a `Package.swift`, so the library can be built and
-tested with SwiftPM:
+The repository includes a `Package.swift` using tools version 5.9, so the
+library can be built and tested with SwiftPM on Xcode 15 or later:
 
 ```sh
 swift build
@@ -114,3 +118,8 @@ and the body; `HEAD` keeps `Content-Length` but sends no body.
 - ``HTTPMethod``
 - ``HTTPStatusCode``
 - ``HTTPVersion``
+
+## License
+
+BearHttpServer is available under the MIT license. See [LICENSE](LICENSE).
+Release notes are tracked in [CHANGELOG.md](CHANGELOG.md).

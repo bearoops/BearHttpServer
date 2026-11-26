@@ -218,19 +218,27 @@ public struct HTTPServerConfiguration: Sendable {
     public var maxBodyBytes: Int
     /// Value sent in the `Server` response header.
     public var serverHeader: String?
+    /// Maximum number of simultaneously open TCP connections.
+    public var maxConnections: Int
+    /// Seconds a connection may stay idle before it is closed. `0` disables the timeout.
+    public var connectionIdleTimeout: TimeInterval
 
     public init(
         host: String = "127.0.0.1",
         port: UInt16 = 0,
         maxHeaderBytes: Int = 64 * 1024,
         maxBodyBytes: Int = 16 * 1024 * 1024,
-        serverHeader: String? = "BearHttpServer"
+        serverHeader: String? = "BearHttpServer",
+        maxConnections: Int = 128,
+        connectionIdleTimeout: TimeInterval = 60
     ) {
         self.host = host
         self.port = port
         self.maxHeaderBytes = max(1, maxHeaderBytes)
         self.maxBodyBytes = max(0, maxBodyBytes)
         self.serverHeader = serverHeader
+        self.maxConnections = max(1, maxConnections)
+        self.connectionIdleTimeout = max(0, connectionIdleTimeout)
     }
 
     public static let localhost = HTTPServerConfiguration()

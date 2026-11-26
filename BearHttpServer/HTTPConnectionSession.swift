@@ -6,6 +6,40 @@
 import Foundation
 import Network
 
+/// Cancels a connection after a stretch of inactivity. Arm before waiting for
+/// more bytes, disarm as soon as bytes arrive; cancelling makes the pending
+/// `NWConnection.receive` completion return an error and end the session.
+private final class IdleTimeoutGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private let connection: NWConnection
+    private let timeout: TimeInterval
+    private var work: DispatchWorkItem?
+
+    init(connection: NWConnection, timeout: TimeInterval) {
+        self.connection = connection
+        self.timeout = timeout
+    }
+
+    func arm() {
+        guard timeout > 0 else { return }
+        lock.lock()
+        work?.cancel()
+        let item = DispatchWorkItem { [weak connection] in
+            connection?.cancel()
+        }
+        work = item
+        lock.unlock()
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: item)
+    }
+
+    func disarm() {
+        lock.lock()
+        work?.cancel()
+        work = nil
+        lock.unlock()
+    }
+}
+
 final class HTTPConnectionSession: @unchecked Sendable {
     typealias RequestHandler = @Sendable (HTTPRequest) async -> HTTPResponse
 
@@ -27,6 +61,16 @@ final class HTTPConnectionSession: @unchecked Sendable {
 
     func run() async {
         var buffer = Data()
+        let idleGuard = IdleTimeoutGuard(
+            connection: connection,
+            timeout: configuration.connectionIdleTimeout
+        )
+        // Once the session ends, actively close the socket instead of relying
+        // on deallocation. This is what makes `Connection: close` effective.
+        defer {
+            idleGuard.disarm()
+            connection.cancel()
+        }
 
         while true {
             switch Self.parseNextRequest(from: &buffer, configuration: configuration) {
@@ -46,8 +90,10 @@ final class HTTPConnectionSession: @unchecked Sendable {
                 return
 
             case .needMore:
+                idleGuard.arm()
                 do {
                     let (chunk, isComplete) = try await receive()
+                    idleGuard.disarm()
                     buffer.append(chunk)
                     if isComplete {
                         return

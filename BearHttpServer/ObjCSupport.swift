@@ -12,6 +12,7 @@ public enum ObjCHTTPServerErrorCode: Int {
     case listenerCancelled = 2
     case listenerFailed = 3
     case unknown = 4
+    case invalidConfiguration = 5
 }
 
 /// Error domain used by ``ObjCHTTPServer``.
@@ -135,10 +136,13 @@ public final class ObjCHTTPServerConfiguration: NSObject {
         )
     }
 
-    fileprivate var swiftConfiguration: HTTPServerConfiguration {
-        HTTPServerConfiguration(
+    /// Returns nil when `port` is outside the valid TCP range instead of
+    /// silently clamping it, so the caller can report a configuration error.
+    fileprivate var swiftConfiguration: HTTPServerConfiguration? {
+        guard (0...Int(UInt16.max)).contains(port) else { return nil }
+        return HTTPServerConfiguration(
             host: host,
-            port: UInt16(clamping: port),
+            port: UInt16(port),
             maxHeaderBytes: maxHeaderBytes,
             maxBodyBytes: maxBodyBytes,
             serverHeader: serverHeader
@@ -223,6 +227,7 @@ public final class ObjCHTTPServer: NSObject, @unchecked Sendable {
     private let server: HTTPServer
     private let handlerBox: ObjCHTTPRequestHandlerBox
     private let handlerTimeout: TimeInterval
+    private let configurationError: NSError?
 
     @objc public init(
         configuration: ObjCHTTPServerConfiguration?,
@@ -230,10 +235,30 @@ public final class ObjCHTTPServer: NSObject, @unchecked Sendable {
     ) {
         let box = ObjCHTTPRequestHandlerBox(requestHandler)
         let timeout = configuration?.handlerTimeout ?? 30
+        let swiftConfiguration: HTTPServerConfiguration
+        if let configuration {
+            if let valid = configuration.swiftConfiguration {
+                swiftConfiguration = valid
+                self.configurationError = nil
+            } else {
+                // Keep an inert server instance, but remember the error so
+                // start() can report it instead of binding a clamped port.
+                swiftConfiguration = .localhost
+                self.configurationError = NSError(
+                    domain: ObjCHTTPServerError.domain,
+                    code: ObjCHTTPServerErrorCode.invalidConfiguration.rawValue,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Invalid port \(configuration.port); must be 0...65535."]
+                )
+            }
+        } else {
+            swiftConfiguration = .localhost
+            self.configurationError = nil
+        }
         self.handlerBox = box
         self.handlerTimeout = timeout
         self.server = HTTPServer(
-            configuration: configuration?.swiftConfiguration ?? .localhost
+            configuration: swiftConfiguration
         ) { request in
             let objcRequest = ObjCHTTPRequest(request)
             return try await withCheckedThrowingContinuation { continuation in
@@ -262,6 +287,10 @@ public final class ObjCHTTPServer: NSObject, @unchecked Sendable {
                     userInfo: [NSLocalizedDescriptionKey: "The HTTP server was deallocated."]
                 )
                 Self.callOnMain { completionBox.value?(0, error) }
+                return
+            }
+            if let configurationError = self.configurationError {
+                Self.callOnMain { completionBox.value?(0, configurationError) }
                 return
             }
             do {
