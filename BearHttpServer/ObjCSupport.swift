@@ -88,6 +88,9 @@ public final class ObjCHTTPServerConfiguration: NSObject {
     @objc public var maxHeaderBytes: Int
     @objc public var maxBodyBytes: Int
     @objc public var serverHeader: String?
+    /// Maximum time to wait for an Objective-C handler to call its completion.
+    /// Defaults to 30 seconds; a timed-out request receives HTTP 504.
+    @objc public var handlerTimeout: TimeInterval
 
     @objc public init(
         host: String,
@@ -101,6 +104,25 @@ public final class ObjCHTTPServerConfiguration: NSObject {
         self.maxHeaderBytes = maxHeaderBytes
         self.maxBodyBytes = maxBodyBytes
         self.serverHeader = serverHeader
+        self.handlerTimeout = 30
+    }
+
+    @objc public convenience init(
+        host: String,
+        port: Int,
+        maxHeaderBytes: Int,
+        maxBodyBytes: Int,
+        serverHeader: String?,
+        handlerTimeout: TimeInterval
+    ) {
+        self.init(
+            host: host,
+            port: port,
+            maxHeaderBytes: maxHeaderBytes,
+            maxBodyBytes: maxBodyBytes,
+            serverHeader: serverHeader
+        )
+        self.handlerTimeout = handlerTimeout
     }
 
     @objc public override convenience init() {
@@ -129,15 +151,66 @@ public typealias ObjCHTTPResponseCompletion = @convention(block) (ObjCHTTPRespon
 
 /// Request handler block used by ``ObjCHTTPServer``.
 ///
-/// The block must call its completion exactly once for each request.
+/// The block should call its completion exactly once for each request. If it
+/// never calls completion, the request is failed with HTTP 504 after
+/// `handlerTimeout`; extra calls are ignored.
 public typealias ObjCHTTPRequestHandler = @convention(block)
     (ObjCHTTPRequest, @escaping ObjCHTTPResponseCompletion) -> Void
 
-private final class ObjCHTTPRequestHandlerBox {
+private final class ObjCHTTPRequestHandlerBox: @unchecked Sendable {
     let handler: ObjCHTTPRequestHandler
 
     init(_ handler: @escaping ObjCHTTPRequestHandler) {
         self.handler = handler
+    }
+}
+
+/// Carries a non-Sendable Objective-C completion block across a task boundary.
+private final class SendableCompletionBox<Value>: @unchecked Sendable {
+    let value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
+}
+
+/// Resumes a request continuation exactly once, with a timeout fallback.
+private final class ObjCHTTPResponseOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<HTTPResponse, Error>?
+    private var timeoutWork: DispatchWorkItem?
+
+    init(timeout: TimeInterval, continuation: CheckedContinuation<HTTPResponse, Error>) {
+        self.continuation = continuation
+        guard timeout > 0 else { return }
+
+        // Strong capture is intentional: the work item must keep the one-shot
+        // wrapper alive until it resumes the continuation. complete() cancels
+        // and releases the item, breaking the cycle on the normal path.
+        let work = DispatchWorkItem { [self] in
+            complete(
+                HTTPResponse.text("Request handler timed out.", status: .gatewayTimeout)
+            )
+        }
+        timeoutWork = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: work)
+    }
+
+    func complete(_ response: ObjCHTTPResponse) {
+        complete(response.swiftResponse)
+    }
+
+    private func complete(_ response: HTTPResponse) {
+        lock.lock()
+        guard let continuation else {
+            lock.unlock()
+            return
+        }
+        self.continuation = nil
+        timeoutWork?.cancel()
+        timeoutWork = nil
+        lock.unlock()
+        continuation.resume(returning: response)
     }
 }
 
@@ -146,24 +219,27 @@ private final class ObjCHTTPRequestHandlerBox {
 /// All asynchronous operations are exposed through blocks. Completion blocks
 /// are invoked on the main queue.
 @objc(BRHTTPServer)
-public final class ObjCHTTPServer: NSObject {
+public final class ObjCHTTPServer: NSObject, @unchecked Sendable {
     private let server: HTTPServer
     private let handlerBox: ObjCHTTPRequestHandlerBox
+    private let handlerTimeout: TimeInterval
 
     @objc public init(
         configuration: ObjCHTTPServerConfiguration?,
         requestHandler: @escaping ObjCHTTPRequestHandler
     ) {
         let box = ObjCHTTPRequestHandlerBox(requestHandler)
+        let timeout = configuration?.handlerTimeout ?? 30
         self.handlerBox = box
+        self.handlerTimeout = timeout
         self.server = HTTPServer(
             configuration: configuration?.swiftConfiguration ?? .localhost
         ) { request in
             let objcRequest = ObjCHTTPRequest(request)
-            let handler = box.handler
             return try await withCheckedThrowingContinuation { continuation in
-                handler(objcRequest) { response in
-                    continuation.resume(returning: response.swiftResponse)
+                let once = ObjCHTTPResponseOnce(timeout: timeout, continuation: continuation)
+                box.handler(objcRequest) { response in
+                    once.complete(response)
                 }
             }
         }
@@ -177,14 +253,22 @@ public final class ObjCHTTPServer: NSObject {
     /// Starts listening. The completion receives the bound port, or an error.
     @objc(startWithCompletion:)
     public func start(completion: ((Int, NSError?) -> Void)?) {
-        let completion = completion
+        let completionBox = SendableCompletionBox(completion)
         Task { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                let error = NSError(
+                    domain: ObjCHTTPServerError.domain,
+                    code: ObjCHTTPServerErrorCode.listenerCancelled.rawValue,
+                    userInfo: [NSLocalizedDescriptionKey: "The HTTP server was deallocated."]
+                )
+                Self.callOnMain { completionBox.value?(0, error) }
+                return
+            }
             do {
                 let port = try await self.server.start()
-                Self.callOnMain { completion?(Int(port), nil) }
+                Self.callOnMain { completionBox.value?(Int(port), nil) }
             } catch {
-                Self.callOnMain { completion?(0, self.nsError(from: error)) }
+                Self.callOnMain { completionBox.value?(0, Self.nsError(from: error)) }
             }
         }
     }
@@ -199,14 +283,14 @@ public final class ObjCHTTPServer: NSObject {
     /// Stops listening and calls `completion` when shutdown is complete.
     @objc(stopWithCompletion:)
     public func stop(completion: (() -> Void)?) {
-        let completion = completion
+        let completionBox = SendableCompletionBox(completion)
         Task { [weak self] in
             await self?.server.stop()
-            Self.callOnMain { completion?() }
+            Self.callOnMain { completionBox.value?() }
         }
     }
 
-    private func nsError(from error: Error) -> NSError {
+    private static func nsError(from error: Error) -> NSError {
         if let serverError = error as? HTTPServerError {
             let code: ObjCHTTPServerErrorCode
             switch serverError {

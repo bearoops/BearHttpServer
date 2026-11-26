@@ -75,30 +75,58 @@ final class HTTPConnectionSession: @unchecked Sendable {
     @discardableResult
     private func send(_ response: HTTPResponse, close: Bool, includeBody: Bool) async -> Bool {
         let status = response.status
+        // 1xx, 204 and 304 must not carry a message body or Content-Length.
+        // HEAD still reports the length a GET would have returned.
+        let statusAllowsBody = !(100..<200).contains(status.code)
+            && status.code != 204
+            && status.code != 304
+        let bodyForLength = statusAllowsBody ? response.body : Data()
+        let bodyToSend = statusAllowsBody && includeBody ? response.body : Data()
+
         var payload = Data()
-        payload.append(contentsOf: "HTTP/1.1 \(status.code) \(status.reasonPhrase)\r\n".utf8)
+        let reasonPhrase = sanitizedHTTPField(status.reasonPhrase)
+        payload.append(contentsOf: "HTTP/1.1 \(status.code) \(reasonPhrase)\r\n".utf8)
 
         var headers = response.headers
         headers["server"] = configuration.serverHeader
         headers["date"] = Self.currentHTTPDate()
-        headers["content-length"] = String(response.body.count)
+        if statusAllowsBody {
+            headers["content-length"] = String(bodyForLength.count)
+        } else {
+            headers["content-length"] = nil
+        }
         headers["connection"] = close ? "close" : "keep-alive"
-        if !response.body.isEmpty && headers["content-type"] == nil {
+        if !bodyForLength.isEmpty && headers["content-type"] == nil {
             headers["content-type"] = "application/octet-stream"
         }
 
+        // Serialize the header collection into wire format: one
+        // "name: value\r\n" line per field, then a blank line to end the block.
+        // Sorting the names keeps output deterministic, which makes the raw
+        // response byte-for-byte predictable in tests.
         for (name, value) in headers.all.sorted(by: { $0.key < $1.key }) {
+            // Defensive cleanup at the serialization boundary. HTTPHeaders
+            // already sanitizes on insertion, but doing it again here means a
+            // value can never escape into a new header line at this last step.
+            let safeName = sanitizedHTTPField(name)
+            // Ordinary headers contain a single value. Set-Cookie is special:
+            // cookies cannot be folded into one comma-separated line, so
+            // HTTPHeaders stores several of them as "a\r\nSet-Cookie: b".
+            // Splitting on CRLF restores one wire line per cookie. Keeping
+            // empty subsequences preserves the original line structure.
             for line in value.split(separator: "\r\n", omittingEmptySubsequences: false) {
-                payload.append(contentsOf: name.utf8)
+                let safeLine = sanitizedHTTPField(String(line))
+                payload.append(contentsOf: safeName.utf8)
                 payload.append(contentsOf: [58, 32]) // ": "
-                payload.append(contentsOf: String(line).utf8)
+                payload.append(contentsOf: safeLine.utf8)
                 payload.append(contentsOf: [13, 10]) // CRLF
             }
         }
+        // The empty CRLF line separates the header block from the body.
         payload.append(contentsOf: [13, 10])
 
-        if includeBody {
-            payload.append(response.body)
+        if !bodyToSend.isEmpty {
+            payload.append(bodyToSend)
         }
 
         do {

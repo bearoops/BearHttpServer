@@ -87,8 +87,16 @@ BRHTTPServer *server = [[BRHTTPServer alloc]
 }];
 ```
 
-Objective-C handlers must call the response completion exactly once for each
-request. Start/stop completion blocks are invoked on the main queue.
+Objective-C handlers should call the response completion exactly once for each
+request. Extra calls are ignored; if a handler never calls it, the request is
+answered with HTTP 504 after `handlerTimeout` seconds (default 30, configurable
+on `BRHTTPServerConfiguration`). Start/stop completion blocks are invoked on the
+main queue; request handlers may run on any thread.
+
+Response reason phrases and header values are sanitized: CR/LF characters are
+replaced with spaces so untrusted values cannot inject extra header lines.
+Statuses that cannot carry a body (`1xx`, `204`, `304`) omit `Content-Length`
+and the body; `HEAD` keeps `Content-Length` but sends no body.
 
 ## Topics
 

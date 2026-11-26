@@ -5,6 +5,16 @@
 
 import Foundation
 
+/// Replaces CR/LF with spaces so untrusted values cannot break out of a single
+/// HTTP field line. Applied at construction and again before serialization.
+@inline(__always)
+func sanitizedHTTPField(_ value: String) -> String {
+    let scalars = value.unicodeScalars.map { scalar -> Unicode.Scalar in
+        (scalar == "\r" || scalar == "\n") ? " " : scalar
+    }
+    return String(String.UnicodeScalarView(scalars))
+}
+
 /// A case-insensitive collection of HTTP header fields.
 public struct HTTPHeaders: Sendable, ExpressibleByDictionaryLiteral {
     private var storage: [String: String]
@@ -28,11 +38,11 @@ public struct HTTPHeaders: Sendable, ExpressibleByDictionaryLiteral {
     }
 
     public subscript(name: String) -> String? {
-        get { storage[name.lowercased()] }
+        get { storage[sanitizedHTTPField(name).lowercased()] }
         set {
-            let key = name.lowercased()
+            let key = sanitizedHTTPField(name).lowercased()
             if let newValue {
-                storage[key] = newValue
+                storage[key] = sanitizedHTTPField(newValue)
             } else {
                 storage.removeValue(forKey: key)
             }
@@ -43,17 +53,18 @@ public struct HTTPHeaders: Sendable, ExpressibleByDictionaryLiteral {
     public var all: [String: String] { storage }
 
     mutating func append(_ name: String, value: String) {
-        let key = name.lowercased()
+        let key = sanitizedHTTPField(name).lowercased()
+        let sanitizedValue = sanitizedHTTPField(value)
         guard let existing = storage[key] else {
-            storage[key] = value
+            storage[key] = sanitizedValue
             return
         }
 
         // Set-Cookie cannot be folded into a comma-separated list.
         if key == "set-cookie" {
-            storage[key] = existing + "\r\nSet-Cookie: " + value
+            storage[key] = existing + "\r\nSet-Cookie: " + sanitizedValue
         } else {
-            storage[key] = existing + ", " + value
+            storage[key] = existing + ", " + sanitizedValue
         }
     }
 }
@@ -127,7 +138,7 @@ public struct HTTPStatusCode: Hashable, Sendable, CustomStringConvertible {
 
     public init(code: Int, reasonPhrase: String) {
         self.code = code
-        self.reasonPhrase = reasonPhrase
+        self.reasonPhrase = sanitizedHTTPField(reasonPhrase)
     }
 
     public var description: String { "\(code) \(reasonPhrase)" }
@@ -145,6 +156,7 @@ public struct HTTPStatusCode: Hashable, Sendable, CustomStringConvertible {
     )
     public static let internalServerError = HTTPStatusCode(code: 500, reasonPhrase: "Internal Server Error")
     public static let notImplemented = HTTPStatusCode(code: 501, reasonPhrase: "Not Implemented")
+    public static let gatewayTimeout = HTTPStatusCode(code: 504, reasonPhrase: "Gateway Timeout")
     public static let serviceUnavailable = HTTPStatusCode(code: 503, reasonPhrase: "Service Unavailable")
 }
 
