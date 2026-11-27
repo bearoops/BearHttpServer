@@ -139,7 +139,7 @@ public actor HTTPServer {
 
         let configuration = self.configuration
         let handler = self.handler
-        let session = HTTPConnectionSession(
+        let session = HTTPConnection(
             connection: connection,
             configuration: configuration
         ) { request in

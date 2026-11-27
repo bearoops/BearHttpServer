@@ -36,10 +36,13 @@ let server = HTTPServer(configuration: configuration) { request in
 idle closing. Pass `host: "::1"` to bind the IPv6 loopback instead.
 
 The current implementation supports HTTP/1.0 and HTTP/1.1 requests with
-`Content-Length` bodies, keep-alive connections, and `HEAD` responses without a
+`Content-Length` or `Transfer-Encoding: chunked` bodies, keep-alive
+connections, `Expect: 100-continue` handshakes, and `HEAD` responses without a
 body. Responses use the same HTTP version as the request: an HTTP/1.0 client
-receives an `HTTP/1.0` status line. Chunked request bodies are rejected with
-`501 Not Implemented`.
+receives an `HTTP/1.0` status line. Chunked request bodies are decoded (chunk
+extensions and trailers are accepted); a handler can opt into chunked output
+by setting `transfer-encoding: chunked` on its `HTTPResponse`, otherwise the
+response uses `Content-Length`.
 
 ## Swift Package Manager
 

@@ -1,5 +1,5 @@
 //
-//  HTTPConnectionSession.swift
+//  HTTPConnection.swift
 //  BearHttpServer
 //
 
@@ -61,7 +61,7 @@ private actor IdleTimeoutGuard {
     }
 }
 
-final class HTTPConnectionSession: @unchecked Sendable {
+final class HTTPConnection: @unchecked Sendable {
     typealias RequestHandler = @Sendable (HTTPRequest) async -> HTTPResponse
 
     private static let headerSeparator: [UInt8] = [13, 10, 13, 10] // CRLF CRLF
@@ -96,9 +96,17 @@ final class HTTPConnectionSession: @unchecked Sendable {
             connection.cancel()
         }
 
+        // A client using `Expect: 100-continue` withholds its body until the
+        // server grants permission. Track whether we have already done so for
+        // the request currently in the buffer: a body can arrive in several
+        // TCP segments, each producing another `.needMore`, but the interim
+        // response must be sent only once per request.
+        var continueSent = false
+
         while true {
             switch Self.parseNextRequest(from: &buffer, configuration: configuration) {
             case .request(let request, let closeAfterResponse):
+                continueSent = false
                 let response = await handler(request)
                 let shouldContinue = await send(
                     response,
@@ -114,7 +122,11 @@ final class HTTPConnectionSession: @unchecked Sendable {
                 await sendError(status: status, message: message, version: version)
                 return
 
-            case .needMore:
+            case .needMore(let wantsContinue):
+                if wantsContinue && !continueSent {
+                    continueSent = true
+                    await sendContinue()
+                }
                 await idleGuard.arm()
                 do {
                     let (chunk, isComplete) = try await receive()
@@ -128,6 +140,14 @@ final class HTTPConnectionSession: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Grants a client's `Expect: 100-continue` so it will start sending the
+    /// body. Interim responses carry only a status line and an empty header
+    /// block — no `Date` or `Server` fields — per RFC 7230 section 2.6.
+    private func sendContinue() async {
+        let payload = Data("HTTP/1.1 100 Continue\r\n\r\n".utf8)
+        try? await sendAll(payload)
     }
 
     private func receive() async throws -> (Data, Bool) {
@@ -168,10 +188,19 @@ final class HTTPConnectionSession: @unchecked Sendable {
         var headers = response.headers
         headers["server"] = configuration.serverHeader
         headers["date"] = await Self.currentHTTPDate()
-        if statusAllowsBody {
-            headers["content-length"] = String(bodyForLength.count)
-        } else {
+
+        // Chunked output is opt-in: a handler signals it with
+        // `transfer-encoding: chunked`. HTTP/1.0 does not understand chunked,
+        // and HEAD/1xx/204/304 cannot carry body framing, so those cases fall
+        // back to Content-Length. This keeps existing handlers unchanged.
+        let requestedChunked = Self.wantsChunked(headers)
+        let useChunked = statusAllowsBody && includeBody && version == .http11 && requestedChunked
+        if useChunked {
+            headers["transfer-encoding"] = "chunked"
             headers["content-length"] = nil
+        } else {
+            headers["transfer-encoding"] = nil
+            headers["content-length"] = statusAllowsBody ? String(bodyForLength.count) : nil
         }
         headers["connection"] = close ? "close" : "keep-alive"
         if !bodyForLength.isEmpty && headers["content-type"] == nil {
@@ -203,7 +232,9 @@ final class HTTPConnectionSession: @unchecked Sendable {
         // The empty CRLF line separates the header block from the body.
         payload.append(contentsOf: [13, 10])
 
-        if !bodyToSend.isEmpty {
+        if useChunked {
+            payload.append(Self.chunkedEncoded(bodyToSend))
+        } else if !bodyToSend.isEmpty {
             payload.append(bodyToSend)
         }
 
@@ -229,6 +260,30 @@ final class HTTPConnectionSession: @unchecked Sendable {
         }
     }
 
+    /// Whether the handler opted into chunked output via the header. Accepts
+    /// comma-separated tokens case-insensitively, mirroring request parsing.
+    private static func wantsChunked(_ headers: HTTPHeaders) -> Bool {
+        guard let encoding = headers["transfer-encoding"] else { return false }
+        return encoding
+            .split(separator: ",")
+            .contains { String($0).trimmingCharacters(in: .whitespaces).lowercased() == "chunked" }
+    }
+
+    /// Formats a body as RFC 7230 chunks: each chunk is `<hex length> CRLF
+    /// <data> CRLF`, followed by a zero-length chunk and the final CRLF.
+    private static func chunkedEncoded(_ body: Data) -> Data {
+        var encoded = Data()
+        // A single chunk holding the entire body is valid and avoids extra
+        // copies; handlers needing true streaming will be handled at P1.
+        let length = String(body.count, radix: 16)
+        encoded.append(contentsOf: length.utf8)
+        encoded.append(contentsOf: [13, 10])
+        encoded.append(body)
+        encoded.append(contentsOf: [13, 10])
+        encoded.append(contentsOf: "0\r\n\r\n".utf8)
+        return encoded
+    }
+
     private func sendError(
         status: HTTPStatusCode,
         message: String,
@@ -249,9 +304,20 @@ final class HTTPConnectionSession: @unchecked Sendable {
     }
 
     private enum ParseResult {
-        case needMore
+        /// The parser needs more bytes. The associated value is true when the
+        /// request announced `Expect: 100-continue` and we should grant it
+        /// before waiting for the body.
+        case needMore(wantsContinue: Bool)
         case request(HTTPRequest, close: Bool)
         case error(HTTPStatusCode, String, HTTPVersion)
+    }
+
+    /// Outcome of decoding a chunked request body.
+    private enum ChunkedResult {
+        case needMore
+        /// Fully decoded body plus the index just past the terminating chunk.
+        case complete(body: Data, end: Int)
+        case error(HTTPStatusCode, String)
     }
 
     private static func parseNextRequest(
@@ -262,7 +328,9 @@ final class HTTPConnectionSession: @unchecked Sendable {
             if buffer.count > configuration.maxHeaderBytes {
                 return .error(.requestHeaderFieldsTooLarge, "Request headers are too large.", .http11)
             }
-            return .needMore
+            // The header block is incomplete, so we cannot know whether
+            // `Expect` is present yet.
+            return .needMore(wantsContinue: false)
         }
 
         if headerEnd > configuration.maxHeaderBytes {
@@ -310,33 +378,71 @@ final class HTTPConnectionSession: @unchecked Sendable {
             headers.append(name, value: value)
         }
 
-        if let transferEncoding = headers["transfer-encoding"],
-           transferEncoding.lowercased().contains("chunked") {
-            return .error(.notImplemented, "Chunked request bodies are not supported.", version)
-        }
+        // `Expect: 100-continue` is an HTTP/1.1 feature. We only grant it once
+        // the header block is complete and we know a body is actually coming;
+        // if the request is rejected for size or framing, a final status is
+        // sent instead, which is the RFC 7231 behavior.
+        let wantsContinue = version == .http11 && expectsContinue(headers)
 
-        var contentLength = 0
-        if let rawContentLength = headers["content-length"] {
-            let trimmed = rawContentLength.trimmingCharacters(in: .whitespaces)
-            guard let value = Int(trimmed), value >= 0 else {
-                return .error(.badRequest, "Invalid Content-Length.", version)
+        let transferCodings = (headers["transfer-encoding"] ?? "")
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+        let isChunked = transferCodings.contains("chunked")
+
+        let body: Data
+        let requestEnd: Int
+
+        if isChunked {
+            // Only the `chunked` coding is implemented. Anything else (gzip,
+            // deflate, ...) cannot be decoded, so fail rather than hand raw
+            // framed bytes to the handler.
+            guard transferCodings.count == 1 else {
+                return .error(.notImplemented, "Unsupported transfer encoding.", version)
             }
-            contentLength = value
+            // Advertising both framing mechanisms is a request-smuggling
+            // vector. Reject it instead of guessing which one wins.
+            guard headers["content-length"] == nil else {
+                return .error(.badRequest, "Conflicting Content-Length and Transfer-Encoding.", version)
+            }
+            switch decodeChunkedBody(
+                in: buffer,
+                from: bodyStart,
+                configuration: configuration
+            ) {
+            case .needMore:
+                return .needMore(wantsContinue: wantsContinue)
+            case .error(let status, let message):
+                return .error(status, message, version)
+            case .complete(let decoded, let end):
+                body = decoded
+                requestEnd = end
+            }
+        } else {
+            var contentLength = 0
+            if let rawContentLength = headers["content-length"] {
+                let trimmed = rawContentLength.trimmingCharacters(in: .whitespaces)
+                guard let value = Int(trimmed), value >= 0 else {
+                    return .error(.badRequest, "Invalid Content-Length.", version)
+                }
+                contentLength = value
+            }
+
+            guard contentLength <= configuration.maxBodyBytes else {
+                return .error(.payloadTooLarge, "Request body is too large.", version)
+            }
+            guard contentLength <= Int.max - bodyStart else {
+                return .error(.payloadTooLarge, "Request body is too large.", version)
+            }
+
+            let end = bodyStart + contentLength
+            guard buffer.count >= end else {
+                return .needMore(wantsContinue: wantsContinue)
+            }
+            body = Data(buffer.subdata(in: bodyStart..<end))
+            requestEnd = end
         }
 
-        guard contentLength <= configuration.maxBodyBytes else {
-            return .error(.payloadTooLarge, "Request body is too large.", version)
-        }
-        guard contentLength <= Int.max - bodyStart else {
-            return .error(.payloadTooLarge, "Request body is too large.", version)
-        }
-
-        let requestEnd = bodyStart + contentLength
-        guard buffer.count >= requestEnd else {
-            return .needMore
-        }
-
-        let body = Data(buffer.subdata(in: bodyStart..<requestEnd))
         buffer = Data(buffer.subdata(in: requestEnd..<buffer.count))
 
         let request = HTTPRequest(
@@ -347,6 +453,109 @@ final class HTTPConnectionSession: @unchecked Sendable {
             body: body
         )
         return .request(request, close: shouldClose(version: version, headers: headers))
+    }
+
+    /// Whether the request asks the server to grant `Expect: 100-continue`.
+    /// Values are comma-separated tokens and compared case-insensitively.
+    private static func expectsContinue(_ headers: HTTPHeaders) -> Bool {
+        guard let expect = headers["expect"] else { return false }
+        return expect
+            .split(separator: ",")
+            .contains { String($0).trimmingCharacters(in: .whitespaces).lowercased() == "100-continue" }
+    }
+
+    /// Maximum size of a single chunk-size or trailer line. Chunk frames are
+    /// framing metadata, not payload, so a small cap prevents a client from
+    /// streaming unbounded bytes without completing a request.
+    private static let maxChunkLineBytes = 8 * 1024
+
+    /// Decodes an RFC 7230 chunked body: repeated
+    /// `<hex size>[;extension] CRLF <data> CRLF`, terminated by a zero-sized
+    /// chunk followed by an (optional) trailer section and a blank line.
+    /// Trailers are consumed for correct framing but are not exposed on
+    /// `HTTPRequest`; only the decoded body octets are returned.
+    private static func decodeChunkedBody(
+        in buffer: Data,
+        from start: Int,
+        configuration: HTTPServerConfiguration
+    ) -> ChunkedResult {
+        var cursor = start
+        var body = Data()
+
+        while true {
+            guard let lineEnd = findCRLF(in: buffer, from: cursor) else {
+                if buffer.count - cursor > maxChunkLineBytes {
+                    return .error(.badRequest, "Chunk size line is too large.")
+                }
+                return .needMore
+            }
+            guard lineEnd - cursor <= maxChunkLineBytes else {
+                return .error(.badRequest, "Chunk size line is too large.")
+            }
+            guard let line = String(data: buffer.subdata(in: cursor..<lineEnd), encoding: .utf8),
+                  let sizeToken = line
+                    .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+                    .first?
+                    .trimmingCharacters(in: .whitespaces),
+                  !sizeToken.isEmpty,
+                  sizeToken.allSatisfy(\.isHexDigit),
+                  let size = Int(sizeToken, radix: 16) else {
+                return .error(.badRequest, "Invalid chunk size.")
+            }
+
+            cursor = lineEnd + 2
+
+            if size == 0 {
+                // Consume trailers up to and including the terminating blank
+                // line. Each line must end in CRLF; the first empty line ends
+                // the section.
+                let trailerStart = cursor
+                while true {
+                    guard let trailerEnd = findCRLF(in: buffer, from: cursor) else {
+                        if buffer.count - trailerStart > configuration.maxHeaderBytes {
+                            return .error(.requestHeaderFieldsTooLarge, "Chunk trailers are too large.")
+                        }
+                        return .needMore
+                    }
+                    if trailerEnd - trailerStart > configuration.maxHeaderBytes {
+                        return .error(.requestHeaderFieldsTooLarge, "Chunk trailers are too large.")
+                    }
+                    if trailerEnd == cursor {
+                        return .complete(body: body, end: trailerEnd + 2)
+                    }
+                    cursor = trailerEnd + 2
+                }
+            }
+
+            // Reject oversized chunks before waiting for their bytes so a
+            // hostile size cannot make us buffer far beyond the limit.
+            guard size <= configuration.maxBodyBytes - body.count,
+                  size <= Int.max - cursor - 2 else {
+                return .error(.payloadTooLarge, "Request body is too large.")
+            }
+            let chunkEnd = cursor + size
+            guard chunkEnd + 2 <= buffer.count else {
+                return .needMore
+            }
+            guard buffer[chunkEnd] == 13, buffer[chunkEnd + 1] == 10 else {
+                return .error(.badRequest, "Malformed chunk terminator.")
+            }
+            body.append(buffer.subdata(in: cursor..<chunkEnd))
+            cursor = chunkEnd + 2
+        }
+    }
+
+    /// Finds the first CRLF at or after `start`, returning the index of the CR.
+    private static func findCRLF(in data: Data, from start: Int) -> Int? {
+        guard start >= 0, start < data.count else { return nil }
+        var index = start
+        while index < data.count - 1 {
+            if data[index] == 13, data[index + 1] == 10 {
+                return index
+            }
+            index += 1
+        }
+        return nil
     }
 
     private static func findHeaderEnd(in data: Data) -> Int? {

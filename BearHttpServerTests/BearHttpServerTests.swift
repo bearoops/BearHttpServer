@@ -49,6 +49,43 @@ struct BearHttpServerTests {
         return String(decoding: data ?? Data(), as: UTF8.self)
     }
 
+    /// Opens a raw TCP connection for tests that need to exchange several
+    /// messages in sequence (e.g. the 100-continue handshake).
+    private func makeRawConnection(port: UInt16) -> NWConnection {
+        let connection = NWConnection(
+            host: "127.0.0.1",
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: .tcp
+        )
+        connection.start(queue: DispatchQueue(label: "bear.test.raw.stream"))
+        return connection
+    }
+
+    private func sendRaw(_ text: String, on connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: Data(text.utf8), completion: .contentProcessed { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            })
+        }
+    }
+
+    private func receiveRaw(from connection: NWConnection) async throws -> String {
+        let data = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data?, Error>) in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: data)
+                }
+            }
+        }
+        return String(decoding: data ?? Data(), as: UTF8.self)
+    }
+
     private func startObjCServer(_ server: ObjCHTTPServer) async throws -> UInt16 {
         try await withCheckedThrowingContinuation { continuation in
             server.start { port, error in
@@ -208,24 +245,122 @@ struct BearHttpServerTests {
 
     // MARK: - Error paths and boundaries
 
-    @Test func chunkedRequestIsRejected() async throws {
-        let server = HTTPServer { _ in HTTPResponse.text("unexpected") }
+    @Test func chunkedRequestBodyIsDeliveredToHandler() async throws {
+        let expected = Data("hello chunked world".utf8)
+        let server = HTTPServer { request in
+            #expect(request.method == .post)
+            #expect(request.body == expected)
+            #expect(request.headers["transfer-encoding"] == "chunked")
+            return HTTPResponse.text("ok")
+        }
         let port = try await server.start()
-        let request = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+        // Two chunks, one with an extension, followed by a trailer section.
+        let request = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+            + "5;ext=value\r\nhello\r\n"
+            + "E\r\n chunked world\r\n"
+            + "0\r\nX-Checksum: abc\r\n\r\n"
         let raw = try await rawResponse(port: port, request: request)
         await server.stop()
 
-        #expect(raw.hasPrefix("HTTP/1.1 501 Not Implemented"))
+        #expect(raw.hasPrefix("HTTP/1.1 200 OK"))
+    }
+
+    @Test func invalidChunkSizeIsRejected() async throws {
+        let server = HTTPServer { _ in HTTPResponse.text("unexpected") }
+        let port = try await server.start()
+        let request = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\nbody\r\n0\r\n\r\n"
+        let raw = try await rawResponse(port: port, request: request)
+        await server.stop()
+
+        #expect(raw.hasPrefix("HTTP/1.1 400 Bad Request"))
+    }
+
+    @Test func conflictingContentLengthAndChunkedIsRejected() async throws {
+        let server = HTTPServer { _ in HTTPResponse.text("unexpected") }
+        let port = try await server.start()
+        let request = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n"
+        let raw = try await rawResponse(port: port, request: request)
+        await server.stop()
+
+        #expect(raw.hasPrefix("HTTP/1.1 400 Bad Request"))
+    }
+
+    @Test func oversizedChunkedBodyIsRejected() async throws {
+        let configuration = HTTPServerConfiguration(maxBodyBytes: 4)
+        let server = HTTPServer(configuration: configuration) { _ in HTTPResponse.text("unexpected") }
+        let port = try await server.start()
+        let request = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n64\r\n\(String(repeating: "x", count: 100))\r\n0\r\n\r\n"
+        let raw = try await rawResponse(port: port, request: request)
+        await server.stop()
+
+        #expect(raw.hasPrefix("HTTP/1.1 413 Payload Too Large"))
+    }
+
+    @Test func chunkedResponseUsesChunkedEncoding() async throws {
+        let server = HTTPServer { _ in
+            HTTPResponse(headers: ["transfer-encoding": "chunked"], body: Data("abc".utf8))
+        }
+        let port = try await server.start()
+        let raw = try await rawResponse(port: port)
+        await server.stop()
+
+        #expect(raw.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(raw.localizedCaseInsensitiveContains("transfer-encoding: chunked"))
+        #expect(!raw.localizedCaseInsensitiveContains("content-length"))
+        #expect(raw.hasSuffix("3\r\nabc\r\n0\r\n\r\n"))
+    }
+
+    @Test func expectContinueGrants100ThenDeliversBody() async throws {
+        let expected = Data("payload".utf8)
+        let server = HTTPServer { request in
+            #expect(request.body == expected)
+            return HTTPResponse.text("received")
+        }
+        let port = try await server.start()
+        let connection = makeRawConnection(port: port)
+        defer { connection.cancel() }
+
+        // Client announces the body but waits for 100 Continue before sending it.
+        try await sendRaw(
+            "POST /upload HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 7\r\n\r\n",
+            on: connection
+        )
+        let interim = try await receiveRaw(from: connection)
+        #expect(interim.hasPrefix("HTTP/1.1 100 Continue\r\n\r\n"))
+
+        try await sendRaw("payload", on: connection)
+        let final = try await receiveRaw(from: connection)
+        await server.stop()
+
+        #expect(final.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(final.hasSuffix("received"))
+    }
+
+    @Test func oversizedBodyWithExpectContinueIsRejectedWithout100() async throws {
+        let configuration = HTTPServerConfiguration(maxBodyBytes: 4)
+        let server = HTTPServer(configuration: configuration) { _ in HTTPResponse.text("unexpected") }
+        let port = try await server.start()
+        let connection = makeRawConnection(port: port)
+        defer { connection.cancel() }
+
+        try await sendRaw(
+            "POST /upload HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 100\r\n\r\n",
+            on: connection
+        )
+        let response = try await receiveRaw(from: connection)
+        await server.stop()
+
+        #expect(response.hasPrefix("HTTP/1.1 413 Payload Too Large"))
     }
 
     @Test func http10ErrorResponseUsesHttp10StatusLine() async throws {
         let server = HTTPServer { _ in HTTPResponse.text("unexpected") }
         let port = try await server.start()
-        let request = "POST / HTTP/1.0\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+        let request = "POST / HTTP/1.0\r\nHost: localhost\r\nContent-Length: abc\r\n\r\n"
         let raw = try await rawResponse(port: port, request: request)
         await server.stop()
 
-        #expect(raw.hasPrefix("HTTP/1.0 501 Not Implemented"))
+        #expect(raw.hasPrefix("HTTP/1.0 400 Bad Request"))
     }
 
     @Test func oversizedHeadersAreRejected() async throws {

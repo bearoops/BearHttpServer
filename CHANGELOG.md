@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Expect: 100-continue` support: the server sends an interim `100 Continue`
+  before reading a body, and rejects oversized requests with a final status
+  instead of granting the expectation.
+- Chunked request bodies (`Transfer-Encoding: chunked`) are decoded, including
+  chunk extensions and trailers. Chunked responses are available by setting
+  `transfer-encoding: chunked` on the response.
+
+### Fixed
+
+- Reject requests that advertise both `Content-Length` and
+  `Transfer-Encoding` with `400 Bad Request` to avoid request smuggling.
+
 ### Changed
 
 - Responses now echo the request's HTTP version; HTTP/1.0 requests receive an
