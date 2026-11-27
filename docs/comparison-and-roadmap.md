@@ -115,6 +115,21 @@ BearHttpServer 是当前四者中**唯一还在活跃提交、唯一基于 Swift
 > P2：有明确需求再做 WebSocket
 > 不做：HTTP/2、WebDAV/上传、公网性能调优（这些场景应交给 Vapor/Hummingbird）
 
+### 详细待办清单（P1 / P2）
+
+**P1 — SDK 完整性**
+
+1. 无路由与解析辅助。只有一个全局 handler，target 是原始字符串；query 参数、Cookie、路径匹配都要调用方自己写。
+2. Swift 侧 handler 无超时。只有 ObjC 桥有 `handlerTimeout`；Swift handler 如果永久挂起，连接会一直被占用（ObjC 有 504 兜底，Swift 没有）。
+3. ObjC 配置缺项。`BRHTTPServerConfiguration` 没有 `maxConnections` 和 `connectionIdleTimeout`——P1 阶段加的资源限制，ObjC 调用方完全用不上。
+4. body 非流式。请求和响应体都全量进内存，唯一保护是 `maxBodyBytes`；没有流式读写，大文件场景受限。
+
+**P2 — 进阶特性与测试**
+
+gzip/deflate 压缩、条件请求（ETag / `If-Modified-Since` / 206 Range）、静态文件与 multipart 解析都还没有。测试只覆盖了 17 个场景，HEAD、maxConnections 上限、空闲超时、重复 Content-Length、Date 头格式、默认 404 handler 都没有对应测试。
+
+> **校对注记**：待办原文中的"17 个场景"与源码不符——`BearHttpServerTests.swift` 实际含 **27 个 `@Test`**。上文列出的是原文表述，后续更新时请以 27 为准；真正要紧的是原文点名的那 6 个未覆盖场景（HEAD、连接数上限、空闲超时、重复 Content-Length、Date 头格式、默认 404），这些确实在现有测试中找不到对应断言。
+
 ### 风险提示
 
 - **维护者风险是真实存在的**：三个对手的停更与本项目一样，都是小团队/个人项目。若无法保证持续维护节奏，宁可把项目稳定在 v0.x 并明确"不做全家桶"，也不要贪多。
