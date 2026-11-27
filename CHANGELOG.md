@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Allow`), and `HTTPRequest` parsing helpers (`path`, `query`, `queryItems`,
   `cookies`). Handlers receive `(HTTPRequest, RouteParams)` so the core request
   type stays untouched.
+- Added six regression tests for response and connection semantics: HEAD keeps
+  `Content-Length` with no body, RFC 1123 `Date` format, default 404 handler,
+  duplicate `Content-Length` rejected with 400, `maxConnections` limit, and
+  idle-timeout connection closure.
 
 ## [0.2.0] - 2026-11-27
 

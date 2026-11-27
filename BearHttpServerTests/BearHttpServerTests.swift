@@ -614,6 +614,144 @@ struct BearHttpServerTests {
 
         #expect(elapsed < 2)
     }
+
+    // MARK: - 守约测试（P0：响应语义）
+
+    @Test func headResponseHasNoBodyButKeepsContentLength() async throws {
+        let server = HTTPServer { _ in HTTPResponse.text("hello-body") }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let response = try await rawResponse(
+            port: port,
+            request: "HEAD / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        #expect(response.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(response.contains("content-length: 10"))
+        // 头之后不能有 body
+        guard let separator = response.range(of: "\r\n\r\n") else {
+            Issue.record("missing header terminator")
+            return
+        }
+        let body = response[separator.upperBound...]
+        #expect(body.isEmpty)
+    }
+
+    @Test func dateHeaderUsesRFC1123Format() async throws {
+        let server = HTTPServer { _ in HTTPResponse.text("ok") }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let response = try await rawResponse(port: port)
+        let lines = response.split(separator: "\r\n", omittingEmptySubsequences: false)
+        let dateLine = lines.first { $0.lowercased().hasPrefix("date:") }
+        #expect(dateLine != nil)
+        let value = dateLine?.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? ""
+        // RFC 1123: "Wed, 21 Oct 2015 07:28:00 GMT" —— 含星期、逗号、GMT 后缀
+        #expect(value.contains(","))
+        #expect(value.hasSuffix("GMT"))
+        let expectedFormat = DateFormatter()
+        expectedFormat.locale = Locale(identifier: "en_US_POSIX")
+        expectedFormat.timeZone = TimeZone(secondsFromGMT: 0)
+        expectedFormat.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        #expect(expectedFormat.date(from: value) != nil)
+    }
+
+    @Test func defaultHandlerReturns404() async throws {
+        // 不传 handler → 默认返回 404
+        let server = HTTPServer()
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let response = try await rawResponse(port: port)
+        #expect(response.hasPrefix("HTTP/1.1 404 Not Found"))
+    }
+
+    @Test func duplicateContentLengthReturns400() async throws {
+        let server = HTTPServer { _ in HTTPResponse.text("ok") }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let response = try await rawResponse(
+            port: port,
+            request: "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+        )
+        #expect(response.hasPrefix("HTTP/1.1 400 Bad Request"))
+    }
+
+    // MARK: - 守约测试（P0：连接资源）
+
+    @Test func maxConnectionsLimitRejectsExtraConnections() async throws {
+        var configuration = HTTPServerConfiguration.localhost
+        configuration.maxConnections = 1
+        let server = HTTPServer(configuration: configuration) { _ in HTTPResponse.text("ok") }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        // 第一条连接占住名额（keep-alive，不关）
+        let first = makeRawConnection(port: port)
+        defer { first.cancel() }
+        try await sendRaw("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", on: first)
+        _ = try await receiveRaw(from: first)
+
+        // 第二条连接即使 TCP 层 ready，服务端也不会为它建立 session，
+        // 因此发出的请求收不到响应。用"能否收到响应"判定名额上限，
+        // 比断言瞬时 connection.state 更稳定（TCP ready 早于服务端 accept）。
+        let second = makeRawConnection(port: port)
+        defer { second.cancel() }
+        try await sendRaw("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", on: second)
+        let oneShot = OnceFlag()
+        let responded = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            second.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, error in
+                if oneShot.claim() {
+                    c.resume(returning: (data?.isEmpty == false) && error == nil)
+                }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: 1 * 1_000_000_000)
+                if oneShot.claim() {
+                    c.resume(returning: false)
+                }
+            }
+        }
+        #expect(!responded)
+    }
+
+    @Test func idleConnectionIsClosedAfterTimeout() async throws {
+        var configuration = HTTPServerConfiguration.localhost
+        configuration.connectionIdleTimeout = 0.5
+        let server = HTTPServer(configuration: configuration) { _ in HTTPResponse.text("ok") }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let connection = makeRawConnection(port: port)
+        defer { connection.cancel() }
+        // 建连后不发任何字节，等待服务端 idle guard 触发 cancel
+        // 服务端 cancel socket 后，客户端挂起的 receive 会带 error/nil 返回。
+        // 用 receive 判定比 stateUpdateHandler 可靠（后者在连接已 ready 后
+        // 才设置时可能已错过早期状态变化）。
+        let oneShot = OnceFlag()
+        let ended = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, isComplete, error in
+                if oneShot.claim() {
+                    c.resume(returning: error != nil || isComplete)
+                }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: 3 * 1_000_000_000)
+                if oneShot.claim() { c.resume(returning: false) }
+            }
+        }
+        #expect(ended)
+    }
+}
+
+/// Thread-safe one-shot flag for network callbacks racing a timeout task.
+private final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var used = false
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !used else { return false }
+        used = true
+        return true
+    }
 }
 
 /// A minimal one-shot signal used to coordinate tests with a running handler.
