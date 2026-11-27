@@ -197,11 +197,11 @@ struct BearHttpServerTests {
     // MARK: - P0 regressions
 
     @Test func crlfInjectionIsSanitized() async throws {
-        let status = HTTPStatusCode(code: 200, reasonPhrase: "OK\r\nX-Injected: yes")
+        let status = HTTPStatusCode(code: 200, reasonPhrase: "OK\r\nX-Injected1: yes")
         let server = HTTPServer { _ in
             HTTPResponse(
                 status: status,
-                headers: ["x-test": "a\r\nX-Injected2: yes"],
+                headers: ["a-test": "a\r\nX-Injected2: yes"],
                 body: Data("body".utf8)
             )
         }
@@ -213,8 +213,15 @@ struct BearHttpServerTests {
         #expect(raw.hasPrefix("HTTP/1.1 200 OK"))
         #expect(!status.reasonPhrase.contains("\r"))
         #expect(!status.reasonPhrase.contains("\n"))
-        #expect(!raw.contains("\r\nX-Injected"))
-        #expect(!raw.contains("\r\nX-Injected2"))
+        #expect(!raw.contains("\r\nX-Injected1"))
+        // Asserting the injected token is absent would be vacuously true: the
+        // serializer splits on CRLF and re-prefixes each line, so a bare
+        // CRLF+token can never appear. Verify sanitization positively instead:
+        // the token must stay on the original header line, after "a-test: a".
+        // If CR/LF survived, it would be split into a second line beginning
+        // "a-test: X-Injected2" and this check would fail.
+        let injectedLine = raw.split(separator: "\r\n").first { $0.contains("X-Injected2") }
+        #expect(injectedLine?.hasPrefix("a-test: a") == true)
     }
 
     @Test func http10RequestGetsHttp10Response() async throws {
@@ -288,15 +295,33 @@ struct BearHttpServerTests {
             return HTTPResponse.text("ok")
         }
         let port = try await server.start()
-        // Two chunks, one with an extension, followed by a trailer section.
-        let request = "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
-            + "5;ext=value\r\nhello\r\n"
-            + "E\r\n chunked world\r\n"
-            + "0\r\nX-Checksum: abc\r\n\r\n"
-        let raw = try await rawResponse(port: port, request: request)
+        let connection = makeRawConnection(port: port)
+        defer { connection.cancel() }
+
+        // Send the request as separate TCP writes so the body genuinely
+        // arrives in pieces. The pauses keep the writes in distinct reads and
+        // force the parser through its incremental (.needMore) path — writing
+        // the whole request at once would only test a complete buffered body.
+        // The first chunk's size line is itself split across two writes to
+        // cover a partially received framing line.
+        let writes = [
+            "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "5;ext",                   // partial chunk-size line
+            "=value\r\n",              // remainder of that line, with an extension
+            "hello\r\n",               // first chunk data
+            "E\r\n chunked world\r\n", // second chunk
+            "0\r\n",                   // last chunk
+            "X-Checksum: abc\r\n\r\n", // trailer section
+        ]
+        for write in writes {
+            try await sendRaw(write, on: connection)
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        let response = try await receiveRaw(from: connection)
         await server.stop()
 
-        #expect(raw.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(response.hasPrefix("HTTP/1.1 200 OK"))
     }
 
     @Test func invalidChunkSizeIsRejected() async throws {

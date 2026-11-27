@@ -153,6 +153,11 @@ and the body; `HEAD` keeps `Content-Length` but sends no body.
 
 Each public type also has inline documentation available via Xcode's Quick Help.
 
+## Documentation
+
+- [Chunked transfer encoding](docs/chunked.md) — how chunked request/response
+  bodies are encoded and decoded, and what the related tests cover.
+
 ## License
 
 BearHttpServer is available under the MIT license. See [LICENSE](LICENSE).
