@@ -62,10 +62,11 @@ let server = HTTPServer(handler: router.handler())
 - Cookie 用 `;` 分隔、`=` 拆分，值去引号。
 - 全为值类型 + `@Sendable` 闭包，天然满足 Swift 6 严格并发；路由表构建后不可变，无共享可变状态。
 
-**待定决策（S1 前必须定）**：`pathParameters` 如何传给 handler？`HTTPRequest` 是 `struct` 且无该存储。
-- 方案 A：改 handler 签名为 `(HTTPRequest, RouteParams)`——干净但要新类型，调用方多一个参数。
-- 方案 B：Router 内部 copy request 并注入参数——需给 `HTTPRequest` 加内部 init，轻微侵入核心类型。
-- **倾向 A**：不碰内核类型，符合"独立 extension"定位。
+**已定决策**：`pathParameters` 通过方案 A 传递——路由 handler 签名为
+`(HTTPRequest, RouteParams)`，路径参数放进新的 `RouteParams` 值类型，**不碰内核的 `HTTPRequest`**，
+符合"独立 extension、零侵入内核"的定位。（方案 B「给 HTTPRequest 加内部 init 注入参数」已弃用。）
+
+**方法不匹配策略**：定为 405，并带 `Allow` 头列出该路径已注册的所有方法；路径完全不匹配返回 404。
 
 **分阶段步骤**：
 
@@ -76,8 +77,13 @@ let server = HTTPServer(handler: router.handler())
 | S3 | 端到端：起 `HTTPServer(handler: router.handler())`，用 `URLSession` 打真实请求 | 验证与内核集成、并发请求不串路由 |
 | S4 | README 增补用法 + CHANGELOG 记录 | 文档与代码同步 |
 
-**测试计划**（新增约 15~20 个断言）：解析边界（空 query、无 `=` 参数、`%ZZ` 非法编码）、路径参数（中文/编码值）、方法不匹配返回 405 还是 404（需定策）、默认 404、并发请求路由不串。
+**实施结果（2026-11-27）**：S1~S4 均完成。`swift test --disable-sandbox` 全绿——
+新增 13 项解析测试 + 14 项路由单测 + 5 项真实 socket 端到端测试，
+加上原有 27 项，共 **59 项测试**。端到端覆盖了 query/Cookie 解析、路径参数、
+404、以及 10 并发请求不串路由。
 
-**工作量估算**：约 300~450 行（解析 ~100、路由 ~150、测试 ~150），与"200~400 行"的原估接近，上浮主要来自边界与测试。**主要风险**是上述 `pathParameters` 传递方式——它决定 extension 是否真的"零侵入"。
+**测试计划**（已落实）：解析边界（空 query、无 `=` 参数、`%ZZ` 非法编码）、路径参数（中文/编码值）、方法不匹配→405、默认 404、并发请求路由不串，均已有对应测试。
+
+**实际工作量**：约 450 行（解析 ~100、路由 ~110、测试 ~240），略高于"200~400 行"的原估，主要来自真实 socket 端到端测试。`pathParameters` 传递方式已按方案 A 落地，内核零侵入。
 
 **明确不做**：正则路由、中间件链、依赖注入、静态文件挂载——会把"轻量 extension"拖成"Web 框架"，与内核定位冲突。

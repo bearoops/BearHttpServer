@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New optional product `BearHttpServerRouting`: a lightweight `Router` with
+  path-segment matching (`:param`, `*`), method dispatch (404 / 405 with
+  `Allow`), and `HTTPRequest` parsing helpers (`path`, `query`, `queryItems`,
+  `cookies`). Handlers receive `(HTTPRequest, RouteParams)` so the core request
+  type stays untouched.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

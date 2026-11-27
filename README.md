@@ -153,10 +153,38 @@ and the body; `HEAD` keeps `Content-Length` but sends no body.
 
 Each public type also has inline documentation available via Xcode's Quick Help.
 
+## Optional routing (`BearHttpServerRouting`)
+
+The core library stays a zero-dependency HTTP/1.1 engine. A separate product adds
+lightweight routing and request parsing without modifying `HTTPRequest`:
+
+```swift
+import BearHttpServer
+import BearHttpServerRouting
+
+var router = Router()
+router.on(.get, "/users/:id") { request, params in
+    let id = params["id"] ?? ""
+    return .text("user \(id), q=\(request.query("q") ?? "")")
+}
+let server = HTTPServer(handler: router.handler())
+```
+
+- Patterns match path segments: `:name` captures one segment, `*` matches one
+  arbitrary segment. Registration order decides precedence.
+- Handlers receive `(HTTPRequest, RouteParams)` so path parameters never get
+  injected into the core request type.
+- Unmatched path → 404; path matched but wrong method → 405 with an `Allow` header.
+- `HTTPRequest` gains `path`, `query`, `queryItems`, `query(_:)`, `cookies` and
+  `cookie(_:)`. Malformed percent escapes are preserved rather than trapping.
+- See [routing plan](docs/routing-plan.md) for design notes and scope.
+
 ## Documentation
 
 - [Chunked transfer encoding](docs/chunked.md) — how chunked request/response
   bodies are encoded and decoded, and what the related tests cover.
+- [Routing plan](docs/routing-plan.md) — design and implementation notes for
+  the optional routing extension.
 
 ## License
 

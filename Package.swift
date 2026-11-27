@@ -15,17 +15,31 @@ let package = Package(
             name: "BearHttpServer",
             targets: ["BearHttpServer"]
         ),
+        .library(
+            name: "BearHttpServerRouting",
+            targets: ["BearHttpServerRouting"]
+        ),
     ],
     targets: [
         .target(
             name: "BearHttpServer",
             path: "BearHttpServer"
         ),
+        .target(
+            name: "BearHttpServerRouting",
+            dependencies: ["BearHttpServer"],
+            path: "BearHttpServerRouting"
+        ),
         .testTarget(
             name: "BearHttpServerTests",
             dependencies: ["BearHttpServer"],
             path: "BearHttpServerTests",
             resources: [.copy("bear_test.p12")]
+        ),
+        .testTarget(
+            name: "BearHttpServerRoutingTests",
+            dependencies: ["BearHttpServerRouting"],
+            path: "BearHttpServerRoutingTests"
         ),
     ]
 )
