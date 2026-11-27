@@ -110,7 +110,7 @@ BearHttpServer 是当前四者中**唯一还在活跃提交、唯一基于 Swift
 
 **整合后的清单**：
 
-1. **P0 — 轻量路由与解析辅助**：`server.route("/path/:id")` + 方法匹配 + query / Cookie / 路径参数解析（对应待办 P1-1）。独立 extension，约 200~400 行，补上最大功能缺口。
+1. **P0 — 轻量路由与解析辅助**（✅ 已完成）：`Router.on(.get, "/path/:id")` + 方法匹配 + query / Cookie / 路径参数解析（对应待办 P1-1）。已作为独立 product `BearHttpServerRouting` 实现（约 450 行，含 32 项测试），内核零改动。详见 [routing-plan.md](routing-plan.md)。
 2. **P0 — 补齐 6 个守约测试**（✅ 已完成）：HEAD 无 body、`maxConnections` 上限、空闲超时、重复 Content-Length→400、Date 头格式、默认 404 handler。成本低、防回归，是投入产出比最高的一项。实现见 `BearHttpServerTests`，SwiftPM 与 Xcode 双端验证通过。
 3. **P0 — 修工程一致性**（✅ 已完成）：`MARKETING_VERSION` 由 `1.0` 对齐到当前 tag `0.2.0`（8 处构建配置）；xcodeproj 的未提交改动已在早前提交（新 target 注册与 scheme）。注：若包含 P0-1 路由功能发布下一个版本，应按语义化版本升到 `0.3.0`。
 4. **P1 — Swift handler 超时**：给 async handler 加可配置超时（复用 idle guard 思路），对齐 ObjC 侧已有的 504 兜底（对应待办 P1-2）。
