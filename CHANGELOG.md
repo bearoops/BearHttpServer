@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exposed `maxConnections` and `connectionIdleTimeout` on
   `BRHTTPServerConfiguration` so Objective-C callers can use the core resource
   limits (defaults 128 and 60, matching Swift).
+- Conditional requests: `GET`/`HEAD` responses now carry an auto-generated
+  `ETag` (FNV-1a of the body, overridable via the `etag` response header).
+  `If-None-Match` (`*`, lists, weak `W/` tags) and `If-Modified-Since` (when the
+  handler sets `last-modified`) return a bodyless 304 on a match. New
+  `HTTPStatusCode.notModified` (304).
 
 ## [0.2.0] - 2026-11-27
 

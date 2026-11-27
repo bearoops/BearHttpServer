@@ -71,6 +71,12 @@ extensions and trailers are accepted); a handler can opt into chunked output
 by setting `transfer-encoding: chunked` on its `HTTPResponse`, otherwise the
 response uses `Content-Length`.
 
+Conditional requests are supported for `GET`/`HEAD`: responses carry an
+auto-generated `ETag` (override it by setting `etag` on the response), and
+`If-None-Match` / `If-Modified-Since` produce a bodyless `304` when the client's
+validator matches. To use `If-Modified-Since`, set `last-modified` on the
+response — the core has no notion of a resource's modification time.
+
 ## Swift Package Manager
 
 The repository includes a `Package.swift` using tools version 5.9, so the

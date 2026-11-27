@@ -22,6 +22,10 @@ private actor HTTPDateFormatter {
     func string(from date: Date) -> String {
         formatter.string(from: date)
     }
+
+    func date(from string: String) -> Date? {
+        formatter.date(from: string)
+    }
 }
 
 /// Cancels a connection after a stretch of inactivity. Arm before waiting for
@@ -141,11 +145,12 @@ final class HTTPConnection: @unchecked Sendable {
                 // current one and let the session wind down.
                 guard await gate.beginRequest() else { return }
                 continueSent = false
-                let response = await Self.invokeHandler(
+                let handlerResponse = await Self.invokeHandler(
                     request,
                     timeout: configuration.handlerTimeout,
                     handler: handler
                 )
+                let response = await Self.applyConditionalRequest(request, to: handlerResponse)
                 let shouldContinue = await send(
                     response,
                     version: request.version,
@@ -374,6 +379,65 @@ final class HTTPConnection: @unchecked Sendable {
         timer.cancel()
         task.cancel()
         return response
+    }
+
+    // MARK: - Conditional requests (ETag / If-Modified-Since)
+
+    /// FNV-1a 64-bit hash of the body, formatted as a strong validator.
+    /// Zero dependencies; stable across runs for identical bytes.
+    private static func generateETag(for body: Data) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in body {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return "\"\(String(hash, radix: 16))\""
+    }
+
+    /// Returns a 304 response when the request's conditional headers match the
+    /// response validators, otherwise returns the response with an ETag attached.
+    /// Only GET/HEAD and 2xx responses are eligible.
+    private static func applyConditionalRequest(
+        _ request: HTTPRequest,
+        to response: HTTPResponse
+    ) async -> HTTPResponse {
+        guard request.method == .get || request.method == .head else { return response }
+        guard (200..<300).contains(response.status.code) else { return response }
+
+        var headers = response.headers
+        // Generate a strong ETag when the handler did not provide one.
+        if headers["etag"] == nil {
+            headers["etag"] = generateETag(for: response.body)
+        }
+        let validated = HTTPResponse(status: response.status, headers: headers, body: response.body)
+
+        func notModified() -> HTTPResponse {
+            HTTPResponse(status: .notModified, headers: headers, body: Data())
+        }
+
+        // If-None-Match takes precedence over If-Modified-Since (RFC 7232).
+        if let raw = request.headers["if-none-match"] {
+            let tag = raw.trimmingCharacters(in: .whitespaces)
+            if tag == "*" { return notModified() }
+            let clientTags = tag.split(separator: ",", omittingEmptySubsequences: true).map {
+                String($0).trimmingCharacters(in: .whitespaces)
+                    .replacingOccurrences(of: "W/", with: "")
+            }
+            let serverTag = (headers["etag"] ?? "")
+                .trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "W/", with: "")
+            if !serverTag.isEmpty && clientTags.contains(serverTag) { return notModified() }
+            return validated
+        }
+
+        if let sinceRaw = request.headers["if-modified-since"],
+           let lastRaw = headers["last-modified"],
+           let since = await dateFormatter.date(from: sinceRaw),
+           let last = await dateFormatter.date(from: lastRaw),
+           last.timeIntervalSince1970.rounded() <= since.timeIntervalSince1970.rounded() {
+            return notModified()
+        }
+        return validated
     }
 
     private enum ParseResult {

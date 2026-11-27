@@ -180,6 +180,7 @@ public struct HTTPStatusCode: Hashable, Sendable, CustomStringConvertible {
 
     public static let ok = HTTPStatusCode(code: 200, reasonPhrase: "OK")
     public static let created = HTTPStatusCode(code: 201, reasonPhrase: "Created")
+    public static let notModified = HTTPStatusCode(code: 304, reasonPhrase: "Not Modified")
     public static let noContent = HTTPStatusCode(code: 204, reasonPhrase: "No Content")
     public static let badRequest = HTTPStatusCode(code: 400, reasonPhrase: "Bad Request")
     public static let notFound = HTTPStatusCode(code: 404, reasonPhrase: "Not Found")
