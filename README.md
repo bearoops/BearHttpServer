@@ -35,6 +35,33 @@ let server = HTTPServer(configuration: configuration) { request in
 `connectionIdleTimeout` to bound resources; set the timeout to `0` to disable
 idle closing. Pass `host: "::1"` to bind the IPv6 loopback instead.
 
+### TLS / HTTPS
+
+Set `tls` on the configuration to accept HTTPS. Provide a server identity
+(certificate plus private key) directly or load one from a PKCS#12 bundle:
+
+```swift
+var configuration = HTTPServerConfiguration(host: "0.0.0.0", port: 8443)
+configuration.tls = try HTTPServerTLSConfiguration(
+    pkcs12: p12Data,
+    password: "bundle-password"
+)
+let server = HTTPServer(configuration: configuration) { _ in
+    HTTPResponse.text("secure")
+}
+```
+
+When `tls` is `nil` (the default) the server serves plain HTTP. Only enable
+plaintext on a trusted network; binding `0.0.0.0` without TLS exposes traffic
+to anyone who can reach the port.
+
+### Graceful shutdown
+
+`await server.stop()` stops accepting new connections, closes idle ones
+immediately, and lets in-flight requests finish. It waits up to
+`gracefulShutdownTimeout` seconds (default 5) before cancelling whatever
+remains; set it to `0` to close everything at once.
+
 The current implementation supports HTTP/1.0 and HTTP/1.1 requests with
 `Content-Length` or `Transfer-Encoding: chunked` bodies, keep-alive
 connections, `Expect: 100-continue` handshakes, and `HEAD` responses without a
@@ -112,7 +139,10 @@ and the body; `HEAD` keeps `Content-Length` but sends no body.
 ### Server
 
 - `HTTPServer` — the actor that accepts connections and dispatches requests.
-- `HTTPServerConfiguration` — host, port, size limits and idle timeout.
+- `HTTPServerConfiguration` — host, port, size limits, idle timeout, TLS and
+  graceful-shutdown settings.
+- `HTTPServerTLSConfiguration` — server identity for HTTPS, from a `SecIdentity`
+  or a PKCS#12 bundle.
 - `HTTPServerError` — errors thrown while starting the server.
 
 ### HTTP types

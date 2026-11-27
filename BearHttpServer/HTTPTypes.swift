@@ -4,6 +4,41 @@
 //
 
 import Foundation
+import Security
+
+/// TLS settings for ``HTTPServer``. Supply the server's certificate and
+/// private key as a `SecIdentity`; the server then accepts HTTPS connections
+/// via Network.framework's built-in TLS protocol.
+///
+/// `SecIdentity` itself is not `Sendable`, but it is immutable once created,
+/// so wrapping it makes the configuration safe to pass into the server actor.
+public struct HTTPServerTLSConfiguration: @unchecked Sendable {
+    public let identity: SecIdentity
+
+    public init(identity: SecIdentity) {
+        self.identity = identity
+    }
+
+    /// Loads a server identity from a PKCS#12 bundle (`.p12` / `.pfx`).
+    /// - Parameters:
+    ///   - pkcs12: The raw PKCS#12 file contents.
+    ///   - password: The bundle's import password.
+    public init(pkcs12: Data, password: String) throws {
+        let options: [String: Any] = [kSecImportExportPassphrase as String: password]
+        var items: CFArray?
+        let status = SecPKCS12Import(pkcs12 as CFData, options as CFDictionary, &items)
+        // Some PKCS#12 bundles (e.g. produced by OpenSSL 3) return a non-zero
+        // status while still yielding a usable identity. Accept the bundle
+        // whenever an identity can be extracted; only fail when it cannot.
+        guard let imported = items as? [[String: Any]],
+              let first = imported.first,
+              let identity = first[kSecImportItemIdentity as String] else {
+            throw HTTPServerError.invalidTLSIdentity(status)
+        }
+        // SecPKCS12Import returns a SecIdentity for the identity key.
+        self.identity = identity as! SecIdentity
+    }
+}
 
 /// Replaces CR/LF with spaces so untrusted values cannot break out of a single
 /// HTTP field line. Applied at construction and again before serialization.
@@ -193,6 +228,9 @@ public enum HTTPServerError: Error, Sendable, LocalizedError {
     case alreadyRunning
     case listenerCancelled
     case listenerFailed(String)
+    /// A PKCS#12 bundle could not be imported. The associated value is the
+    /// Security framework status code.
+    case invalidTLSIdentity(OSStatus)
 
     public var errorDescription: String? {
         switch self {
@@ -202,6 +240,8 @@ public enum HTTPServerError: Error, Sendable, LocalizedError {
             return "The HTTP listener was cancelled before it became ready."
         case .listenerFailed(let message):
             return "The HTTP listener failed: \(message)"
+        case .invalidTLSIdentity(let status):
+            return "The TLS identity could not be imported (status \(status))."
         }
     }
 }
@@ -222,6 +262,11 @@ public struct HTTPServerConfiguration: Sendable {
     public var maxConnections: Int
     /// Seconds a connection may stay idle before it is closed. `0` disables the timeout.
     public var connectionIdleTimeout: TimeInterval
+    /// TLS settings. When set, the server accepts HTTPS instead of plain HTTP.
+    public var tls: HTTPServerTLSConfiguration?
+    /// How long `stop()` waits for in-flight requests to finish before
+    /// cancelling the remaining connections. `0` closes immediately.
+    public var gracefulShutdownTimeout: TimeInterval
 
     public init(
         host: String = "127.0.0.1",
@@ -230,7 +275,9 @@ public struct HTTPServerConfiguration: Sendable {
         maxBodyBytes: Int = 16 * 1024 * 1024,
         serverHeader: String? = "BearHttpServer",
         maxConnections: Int = 128,
-        connectionIdleTimeout: TimeInterval = 60
+        connectionIdleTimeout: TimeInterval = 60,
+        tls: HTTPServerTLSConfiguration? = nil,
+        gracefulShutdownTimeout: TimeInterval = 5
     ) {
         self.host = host
         self.port = port
@@ -239,6 +286,8 @@ public struct HTTPServerConfiguration: Sendable {
         self.serverHeader = serverHeader
         self.maxConnections = max(1, maxConnections)
         self.connectionIdleTimeout = max(0, connectionIdleTimeout)
+        self.tls = tls
+        self.gracefulShutdownTimeout = max(0, gracefulShutdownTimeout)
     }
 
     public static let localhost = HTTPServerConfiguration()

@@ -332,6 +332,8 @@ public final class ObjCHTTPServer: NSObject, @unchecked Sendable {
                 code = .listenerCancelled
             case .listenerFailed:
                 code = .listenerFailed
+            case .invalidTLSIdentity:
+                code = .invalidConfiguration
             }
             return NSError(
                 domain: ObjCHTTPServerError.domain,

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TLS/HTTPS support via `HTTPServerConfiguration.tls` and the new
+  `HTTPServerTLSConfiguration` (accepts a `SecIdentity` or a PKCS#12 bundle).
+- Graceful shutdown: `stop()` now drains in-flight requests up to
+  `gracefulShutdownTimeout` (default 5s, `0` closes immediately) before
+  cancelling connections.
 - `Expect: 100-continue` support: the server sends an interim `100 Continue`
   before reading a body, and rejects oversized requests with a final status
   instead of granting the expectation.

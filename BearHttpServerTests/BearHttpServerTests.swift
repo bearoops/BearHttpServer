@@ -8,6 +8,10 @@ import Network
 import Testing
 @testable import BearHttpServer
 
+private enum TestError: Error {
+    case missingCertificate
+}
+
 struct BearHttpServerTests {
 
     // MARK: - Helpers
@@ -84,6 +88,36 @@ struct BearHttpServerTests {
             }
         }
         return String(decoding: data ?? Data(), as: UTF8.self)
+    }
+
+    /// Loads the self-signed test identity shipped beside this test source.
+    /// Resolving via `#filePath` works under both SwiftPM and a plain Xcode
+    /// test target (where `Bundle.module` is not generated).
+    private func testTLSConfiguration() throws -> HTTPServerTLSConfiguration {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+        let certificateURL = sourceURL.deletingLastPathComponent()
+            .appendingPathComponent("bear_test.p12")
+        guard FileManager.default.fileExists(atPath: certificateURL.path) else {
+            throw TestError.missingCertificate
+        }
+        let data = try Data(contentsOf: certificateURL)
+        return try HTTPServerTLSConfiguration(pkcs12: data, password: "testpass")
+    }
+
+    /// Opens a TLS connection that accepts the self-signed test certificate.
+    private func makeTLSConnection(port: UInt16) -> NWConnection {
+        let options = NWProtocolTLS.Options()
+        sec_protocol_options_set_verify_block(options.securityProtocolOptions, { _, _, complete in
+            complete(true)
+        }, DispatchQueue.global())
+        let parameters = NWParameters(tls: options)
+        let connection = NWConnection(
+            host: "127.0.0.1",
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: parameters
+        )
+        connection.start(queue: DispatchQueue(label: "bear.test.tls"))
+        return connection
     }
 
     private func startObjCServer(_ server: ObjCHTTPServer) async throws -> UInt16 {
@@ -482,5 +516,94 @@ struct BearHttpServerTests {
         }
 
         #expect(result.1?.code == ObjCHTTPServerErrorCode.invalidConfiguration.rawValue)
+    }
+
+    // MARK: - TLS and graceful shutdown
+
+    @Test func tlsServerServesHTTPSRequest() async throws {
+        var configuration = HTTPServerConfiguration()
+        configuration.tls = try testTLSConfiguration()
+        let server = HTTPServer(configuration: configuration) { _ in
+            HTTPResponse.text("secure hello")
+        }
+        let port = try await server.start()
+
+        let connection = makeTLSConnection(port: port)
+        defer { connection.cancel() }
+        try await sendRaw(
+            "GET /secure HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            on: connection
+        )
+        let response = try await receiveRaw(from: connection)
+        await server.stop()
+
+        #expect(response.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(response.hasSuffix("secure hello"))
+    }
+
+    @Test func invalidPKCS12ReportsConfigurationError() {
+        let data = Data("not a pkcs12 bundle".utf8)
+        #expect(throws: HTTPServerError.self) {
+            _ = try HTTPServerTLSConfiguration(pkcs12: data, password: "wrong")
+        }
+    }
+
+    @Test func gracefulShutdownWaitsForInFlightRequest() async throws {
+        let started = Signal()
+        let server = HTTPServer { _ in
+            await started.fire()
+            try? await Task.sleep(nanoseconds: 150_000_000) // 0.15s
+            return HTTPResponse.text("finished")
+        }
+        let port = try await server.start()
+
+        // Fire a request and, once the handler is running, stop the server.
+        let requestTask = Task {
+            let url = URL(string: "http://127.0.0.1:\(port)/slow")!
+            let (data, _) = try await URLSession.shared.data(from: url)
+            return String(decoding: data, as: UTF8.self)
+        }
+        await started.wait()
+        let stopStarted = Date()
+        await server.stop()
+        let elapsed = Date().timeIntervalSince(stopStarted)
+        let body = try await requestTask.value
+
+        #expect(body == "finished")
+        #expect(elapsed >= 0.1)
+    }
+
+    @Test func stopClosesIdleConnectionsImmediately() async throws {
+        let server = HTTPServer { _ in HTTPResponse.text("ok") }
+        let port = try await server.start()
+
+        // Open a keep-alive connection so an idle session exists.
+        let connection = makeRawConnection(port: port)
+        try await sendRaw("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", on: connection)
+        _ = try await receiveRaw(from: connection)
+
+        let stopStarted = Date()
+        await server.stop()
+        let elapsed = Date().timeIntervalSince(stopStarted)
+        connection.cancel()
+
+        #expect(elapsed < 2)
+    }
+}
+
+/// A minimal one-shot signal used to coordinate tests with a running handler.
+private actor Signal {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var fired = false
+
+    func fire() {
+        fired = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func wait() async {
+        if fired { return }
+        await withCheckedContinuation { continuation = $0 }
     }
 }

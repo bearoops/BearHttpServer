@@ -6,6 +6,50 @@
 import Foundation
 import Network
 
+/// Per-connection gate used during graceful shutdown. It serializes the
+/// decision between "an in-flight request is being handled" and "the
+/// connection is idle", so `stop()` can cancel idle sockets immediately while
+/// letting active requests finish.
+actor ConnectionGate {
+    private var isDraining = false
+    private var inFlight = false
+
+    /// Marks the start of request handling. Returns false when the connection
+    /// is draining, in which case the request must not be processed.
+    func beginRequest() -> Bool {
+        guard !isDraining else { return false }
+        inFlight = true
+        return true
+    }
+
+    /// Marks the end of request handling. Returns true when the connection is
+    /// draining and the session should stop instead of reading another request.
+    func endRequest() -> Bool {
+        inFlight = false
+        return isDraining
+    }
+
+    /// Starts a graceful drain. Returns true when the connection is idle and
+    /// the caller may cancel it immediately; false means a request is in
+    /// flight and must be allowed to complete.
+    func beginDrain() -> Bool {
+        isDraining = true
+        return !inFlight
+    }
+}
+
+/// Bookkeeping for a single accepted connection.
+private final class ConnectionContext: @unchecked Sendable {
+    let connection: NWConnection
+    let gate: ConnectionGate
+    var task: Task<Void, Never>?
+
+    init(connection: NWConnection, gate: ConnectionGate) {
+        self.connection = connection
+        self.gate = gate
+    }
+}
+
 /// A small HTTP/1.1 server backed by Network.framework.
 ///
 /// The server is an actor, so listener state, active connections and the
@@ -24,7 +68,7 @@ public actor HTTPServer {
         attributes: .concurrent
     )
     private var listener: NWListener?
-    private var connections: [UUID: NWConnection] = [:]
+    private var connections: [UUID: ConnectionContext] = [:]
     private var readyContinuation: CheckedContinuation<UInt16, Error>?
 
     public init(
@@ -39,7 +83,7 @@ public actor HTTPServer {
         listener?.stateUpdateHandler = nil
         listener?.newConnectionHandler = nil
         listener?.cancel()
-        connections.values.forEach { $0.cancel() }
+        connections.values.forEach { $0.connection.cancel() }
     }
 
     /// Starts listening and returns the bound TCP port.
@@ -49,7 +93,19 @@ public actor HTTPServer {
             throw HTTPServerError.alreadyRunning
         }
 
-        let parameters = NWParameters.tcp
+        let parameters: NWParameters
+        if let tls = configuration.tls {
+            let tlsOptions = NWProtocolTLS.Options()
+            if let secIdentity = sec_identity_create(tls.identity) {
+                sec_protocol_options_set_local_identity(
+                    tlsOptions.securityProtocolOptions,
+                    secIdentity
+                )
+            }
+            parameters = NWParameters(tls: tlsOptions)
+        } else {
+            parameters = .tcp
+        }
         // Intentionally do not set `allowLocalEndpointReuse`. Allowing reuse
         // lets another socket bind the same address/port, which can silently
         // steal connections. A bind conflict should fail loudly instead.
@@ -80,21 +136,78 @@ public actor HTTPServer {
         }
     }
 
-    /// Stops listening and closes all active connections. Safe to call repeatedly.
-    public func stop() {
+    /// Stops listening and gracefully closes active connections. Safe to call
+    /// repeatedly.
+    ///
+    /// The listener is cancelled first so no new connections arrive. Idle
+    /// connections are closed at once; connections with an in-flight request
+    /// are allowed to finish, up to `gracefulShutdownTimeout` seconds. After
+    /// the timeout any remaining connections are cancelled. Set the timeout to
+    /// `0` to close all connections immediately.
+    public func stop() async {
         let oldListener = listener
         listener = nil
-
-        let activeConnections = Array(connections.values)
-        connections.removeAll()
 
         oldListener?.stateUpdateHandler = nil
         oldListener?.newConnectionHandler = nil
         oldListener?.cancel()
-        activeConnections.forEach { $0.cancel() }
 
         readyContinuation?.resume(throwing: HTTPServerError.listenerCancelled)
         readyContinuation = nil
+
+        let contexts = Array(connections.values)
+        guard !contexts.isEmpty else { return }
+
+        let timeout = configuration.gracefulShutdownTimeout
+        guard timeout > 0 else {
+            contexts.forEach { $0.connection.cancel() }
+            connections.removeAll()
+            return
+        }
+
+        // Ask each gate to drain. Idle sockets are cancelled immediately;
+        // active requests are signalled to stop after the current response.
+        var remaining = 0
+        for context in contexts {
+            if await context.gate.beginDrain() {
+                context.connection.cancel()
+            } else {
+                remaining += 1
+            }
+        }
+        guard remaining > 0 else {
+            connections.removeAll()
+            return
+        }
+
+        // The deadline force-cancels anything still alive when the grace
+        // period expires. If all requests drain first, we cancel this task and
+        // it returns early because `Task.sleep` throws on cancellation.
+        let deadline = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            await self?.forceCancel(contexts)
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for context in contexts {
+                if let task = context.task {
+                    group.addTask { await task.value }
+                }
+            }
+            await group.waitForAll()
+        }
+        deadline.cancel()
+
+        // Still cancel leftovers defensively: a connection with no captured
+        // task, or one whose session ignored cancellation, must not survive.
+        forceCancel(contexts)
+        connections.removeAll()
+    }
+
+    private func forceCancel(_ contexts: [ConnectionContext]) {
+        for context in contexts {
+            context.connection.cancel()
+        }
     }
 
     private func handleListenerState(_ state: NWListener.State, from listener: NWListener) {
@@ -135,13 +248,16 @@ public actor HTTPServer {
         }
 
         let id = UUID()
-        connections[id] = connection
+        let gate = ConnectionGate()
+        let context = ConnectionContext(connection: connection, gate: gate)
+        connections[id] = context
 
         let configuration = self.configuration
         let handler = self.handler
         let session = HTTPConnection(
             connection: connection,
-            configuration: configuration
+            configuration: configuration,
+            gate: gate
         ) { request in
             do {
                 return try await handler(request)
@@ -155,10 +271,11 @@ public actor HTTPServer {
 
         connection.start(queue: queue)
 
-        Task { [weak self] in
+        let task = Task { [weak self] in
             await session.run()
             await self?.removeConnection(id)
         }
+        context.task = task
     }
 
     private func removeConnection(_ id: UUID) {

@@ -68,15 +68,18 @@ final class HTTPConnection: @unchecked Sendable {
 
     private let connection: NWConnection
     private let configuration: HTTPServerConfiguration
+    private let gate: ConnectionGate
     private let handler: RequestHandler
 
     init(
         connection: NWConnection,
         configuration: HTTPServerConfiguration,
+        gate: ConnectionGate,
         handler: @escaping RequestHandler
     ) {
         self.connection = connection
         self.configuration = configuration
+        self.gate = gate
         self.handler = handler
     }
 
@@ -106,6 +109,10 @@ final class HTTPConnection: @unchecked Sendable {
         while true {
             switch Self.parseNextRequest(from: &buffer, configuration: configuration) {
             case .request(let request, let closeAfterResponse):
+                // A graceful stop may have begun while we were waiting for
+                // bytes. Do not start a new request once draining; finish the
+                // current one and let the session wind down.
+                guard await gate.beginRequest() else { return }
                 continueSent = false
                 let response = await handler(request)
                 let shouldContinue = await send(
@@ -114,7 +121,8 @@ final class HTTPConnection: @unchecked Sendable {
                     close: closeAfterResponse,
                     includeBody: request.method != .head
                 )
-                if !shouldContinue {
+                let shouldDrain = await gate.endRequest()
+                if !shouldContinue || shouldDrain {
                     return
                 }
 
