@@ -101,14 +101,25 @@ BearHttpServer 是当前四者中**唯一还在活跃提交、唯一基于 Swift
 
 ### 建议的投入优先级（按性价比）
 
-1. **P0 — 补一个可选的轻量路由层**（独立 target 或 extension）：`server.route("/path/:id")`、方法匹配、参数解析。成本约 200~400 行，直接补上最大功能缺口，且与老库形成功能对等。
-2. **P0 — 修工程一致性**：`MARKETING_VERSION` 对齐 tag；清理工作区里 3 个未提交的 xcodeproj 改动。
-3. **P1 — Swift handler 超时**：给 async handler 加可配置超时（复用 idle guard 的思路），避免永久挂起。
-4. **P1 — 真流式响应**：把 chunked 输出改成"边产边发 + 背压"，支撑大文件/长连接场景。
-5. **P2 — 选择性补 WebSocket**：只在有明确用户需求时做；这是最大的一块工作量，也是最容易把项目拖入"什么都有但什么都不精"的陷阱。
-6. **不做**：HTTP/2（内嵌场景收益极低）、multipart/WebDAV（有专门库）、公网性能调优。
+**筛选原则**（对照下方「详细待办清单」逐条判断）：
 
-**投入路径（速记版）**
+- **必做 · 低成本高收益**：ObjC 配置缺项只是把 Swift 侧已有的 `maxConnections` / `connectionIdleTimeout` 透传到 `BRHTTPServerConfiguration`，改动量极小，却直接消除 ObjC 门面（本项目差异化优势）与内核的能力落差；6 个测试缺口都是协议正确性与资源上限的守约点，补上能防止后续改动回归。这两项原优先级清单未覆盖，现补入。
+- **必做 · 补内核短板**：路由与解析辅助、Swift handler 超时、双侧流式 body——对应详细待办 P1 的 1/2/4，都属于"内核可用性"而非"功能广度"，符合内核定位。
+- **按需**：gzip、条件请求（ETag / `If-Modified-Since`）、WebSocket——锦上添花，优先用库外中间件，有明确用户需求再进内核。
+- **不做**：静态文件、multipart、206 Range（依赖静态文件）、WebDAV、HTTP/2——要么有专门库，要么与内嵌内核定位冲突。
+
+**整合后的清单**：
+
+1. **P0 — 轻量路由与解析辅助**：`server.route("/path/:id")` + 方法匹配 + query / Cookie / 路径参数解析（对应待办 P1-1）。独立 extension，约 200~400 行，补上最大功能缺口。
+2. **P0 — 补齐 6 个守约测试**（新纳入）：HEAD 无 body、`maxConnections` 上限、空闲超时、重复 Content-Length→400、Date 头格式、默认 404 handler。成本低、防回归，是投入产出比最高的一项。
+3. **P0 — 修工程一致性**：`MARKETING_VERSION` 对齐 tag；清理工作区里 3 个未提交的 xcodeproj 改动。
+4. **P1 — Swift handler 超时**：给 async handler 加可配置超时（复用 idle guard 思路），对齐 ObjC 侧已有的 504 兜底（对应待办 P1-2）。
+5. **P1 — ObjC 配置补齐**（新纳入）：`BRHTTPServerConfiguration` 透传 `maxConnections` 与 `connectionIdleTimeout`，让 ObjC 调用方能用到内核已有的资源限制（对应待办 P1-3，改动极小）。
+6. **P1 — 真流式 body**：请求与响应双侧改为边读边处理 / 边产边发 + 背压，突破 16MB 全量内存限制（对应待办 P1-4）。这是 P1 中唯一的大工程项，排在低成本项之后。
+7. **P2 — 按需特性**（新纳入归类）：WebSocket、gzip/deflate、条件请求（ETag / `If-Modified-Since`）。前两者工作量大或可库外解决；条件请求成本较低，可在有需求时优先做。
+8. **不做**：HTTP/2、静态文件、multipart、206 Range、WebDAV/上传、公网性能调优（专门库或 Vapor/Hummingbird 更合适）。
+
+**投入路径（初版速记，完整筛选见上表）**
 
 > P0：补一个轻量路由层（库外 200~400 行即可）+ 修 MARKETING_VERSION 与 v0.2.0 不一致
 > P1：Swift handler 超时、真流式响应
