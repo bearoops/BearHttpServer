@@ -61,6 +61,33 @@ private actor IdleTimeoutGuard {
     }
 }
 
+/// Answers a pending handler continuation exactly once — the handler path and
+/// the timeout path race, and whichever reaches `complete` first wins.
+/// `complete` may arrive before `install`; the response is buffered until a
+/// continuation is installed.
+private actor HandlerResponseOnce {
+    private var continuation: CheckedContinuation<HTTPResponse, Never>?
+    private var pending: HTTPResponse?
+
+    func install(_ c: CheckedContinuation<HTTPResponse, Never>) {
+        if let pending {
+            self.pending = nil
+            c.resume(returning: pending)
+        } else {
+            continuation = c
+        }
+    }
+
+    func complete(_ response: HTTPResponse) {
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(returning: response)
+        } else {
+            pending = response
+        }
+    }
+}
+
 final class HTTPConnection: @unchecked Sendable {
     typealias RequestHandler = @Sendable (HTTPRequest) async -> HTTPResponse
 
@@ -114,7 +141,11 @@ final class HTTPConnection: @unchecked Sendable {
                 // current one and let the session wind down.
                 guard await gate.beginRequest() else { return }
                 continueSent = false
-                let response = await handler(request)
+                let response = await Self.invokeHandler(
+                    request,
+                    timeout: configuration.handlerTimeout,
+                    handler: handler
+                )
                 let shouldContinue = await send(
                     response,
                     version: request.version,
@@ -309,6 +340,40 @@ final class HTTPConnection: @unchecked Sendable {
 
     private static func currentHTTPDate() async -> String {
         await dateFormatter.string(from: Date())
+    }
+
+    /// Invokes `handler` with an optional deadline. When `timeout <= 0` the
+    /// handler runs directly (zero overhead, existing behavior). Otherwise a
+    /// detached timer races the handler and answers 504 if it wins; the timer
+    /// is cancelled as soon as the handler responds.
+    private static func invokeHandler(
+        _ request: HTTPRequest,
+        timeout: TimeInterval,
+        handler: @escaping RequestHandler
+    ) async -> HTTPResponse {
+        guard timeout > 0 else { return await handler(request) }
+
+        let once = HandlerResponseOnce()
+        let task = Task {
+            let response = await handler(request)
+            await once.complete(response)
+        }
+        let timer = Task.detached {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            } catch {
+                return // cancelled because the handler already answered
+            }
+            await once.complete(
+                HTTPResponse.text("Request handler timed out.", status: .gatewayTimeout)
+            )
+        }
+        let response = await withCheckedContinuation { (c: CheckedContinuation<HTTPResponse, Never>) in
+            Task { await once.install(c) }
+        }
+        timer.cancel()
+        task.cancel()
+        return response
     }
 
     private enum ParseResult {

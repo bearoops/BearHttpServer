@@ -262,6 +262,9 @@ public struct HTTPServerConfiguration: Sendable {
     public var maxConnections: Int
     /// Seconds a connection may stay idle before it is closed. `0` disables the timeout.
     public var connectionIdleTimeout: TimeInterval
+    /// Seconds an async request handler may run before the server answers 504.
+    /// `0` (the default) disables the timeout, preserving existing behavior.
+    public var handlerTimeout: TimeInterval
     /// TLS settings. When set, the server accepts HTTPS instead of plain HTTP.
     public var tls: HTTPServerTLSConfiguration?
     /// How long `stop()` waits for in-flight requests to finish before
@@ -276,6 +279,7 @@ public struct HTTPServerConfiguration: Sendable {
         serverHeader: String? = "BearHttpServer",
         maxConnections: Int = 128,
         connectionIdleTimeout: TimeInterval = 60,
+        handlerTimeout: TimeInterval = 0,
         tls: HTTPServerTLSConfiguration? = nil,
         gracefulShutdownTimeout: TimeInterval = 5
     ) {
@@ -286,6 +290,7 @@ public struct HTTPServerConfiguration: Sendable {
         self.serverHeader = serverHeader
         self.maxConnections = max(1, maxConnections)
         self.connectionIdleTimeout = max(0, connectionIdleTimeout)
+        self.handlerTimeout = max(0, handlerTimeout)
         self.tls = tls
         self.gracefulShutdownTimeout = max(0, gracefulShutdownTimeout)
     }

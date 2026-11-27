@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Content-Length` with no body, RFC 1123 `Date` format, default 404 handler,
   duplicate `Content-Length` rejected with 400, `maxConnections` limit, and
   idle-timeout connection closure.
+- Added configurable `HTTPServerConfiguration.handlerTimeout` for Swift async
+  handlers. A timed-out handler now receives a 504 response (matching the ObjC
+  bridge's fallback); default `0` disables the timeout.
 
 ## [0.2.0] - 2026-11-27
 

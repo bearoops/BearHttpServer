@@ -740,6 +740,86 @@ struct BearHttpServerTests {
         }
         #expect(ended)
     }
+
+    // MARK: - 守约测试（P1：Swift handler 超时）
+
+    @Test func handlerTimeoutReturns504() async throws {
+        var configuration = HTTPServerConfiguration.localhost
+        configuration.handlerTimeout = 0.3
+        let gate = Signal()
+        let server = HTTPServer(configuration: configuration) { _ in
+            await gate.wait()   // 挂起，直到测试结束时释放
+            return HTTPResponse.text("too late")
+        }
+        let port = try await server.start()
+        defer {
+            Task { await gate.fire() }
+            Task { await server.stop() }
+        }
+        let response = try await rawResponse(
+            port: port,
+            request: "GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        #expect(response.hasPrefix("HTTP/1.1 504 Gateway Timeout"))
+        #expect(response.contains("Request handler timed out."))
+    }
+
+    @Test func fastHandlerIsNotAffectedByTimeout() async throws {
+        var configuration = HTTPServerConfiguration.localhost
+        configuration.handlerTimeout = 5
+        let server = HTTPServer(configuration: configuration) { _ in .text("fast") }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let response = try await rawResponse(port: port)
+        #expect(response.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(response.contains("fast"))
+    }
+
+    @Test func zeroHandlerTimeoutDisablesTimeout() async throws {
+        var configuration = HTTPServerConfiguration.localhost
+        configuration.handlerTimeout = 0
+        let gate = Signal()
+        let server = HTTPServer(configuration: configuration) { _ in
+            try? await Task.sleep(nanoseconds: 100 * 1_000_000)
+            await gate.fire()
+            return HTTPResponse.text("done")
+        }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let response = try await rawResponse(port: port)
+        #expect(response.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(response.contains("done"))
+    }
+
+    @Test func timeoutDoesNotLeakAcrossConcurrentRequests() async throws {
+        var configuration = HTTPServerConfiguration.localhost
+        configuration.handlerTimeout = 0.3
+        let releaseSlow = Signal()
+        let server = HTTPServer(configuration: configuration) { request in
+            if request.target == "/slow" {
+                await releaseSlow.wait()
+            }
+            return .text("ok-\(request.target)")
+        }
+        let port = try await server.start()
+        defer {
+            Task { await releaseSlow.fire() }
+            Task { await server.stop() }
+        }
+        // 慢请求（会超时）与快请求并发
+        async let slow = rawResponse(
+            port: port,
+            request: "GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        async let fast = rawResponse(
+            port: port,
+            request: "GET /fast HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        let (slowResponse, fastResponse) = try await (slow, fast)
+        #expect(slowResponse.hasPrefix("HTTP/1.1 504"))
+        #expect(fastResponse.hasPrefix("HTTP/1.1 200"))
+        #expect(fastResponse.contains("ok-/fast"))
+    }
 }
 
 /// Thread-safe one-shot flag for network callbacks racing a timeout task.

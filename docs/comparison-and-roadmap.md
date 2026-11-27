@@ -113,7 +113,7 @@ BearHttpServer 是当前四者中**唯一还在活跃提交、唯一基于 Swift
 1. **P0 — 轻量路由与解析辅助**（✅ 已完成）：`Router.on(.get, "/path/:id")` + 方法匹配 + query / Cookie / 路径参数解析（对应待办 P1-1）。已作为独立 product `BearHttpServerRouting` 实现（约 450 行，含 32 项测试），内核零改动。详见 [routing-plan.md](routing-plan.md)。
 2. **P0 — 补齐 6 个守约测试**（✅ 已完成）：HEAD 无 body、`maxConnections` 上限、空闲超时、重复 Content-Length→400、Date 头格式、默认 404 handler。成本低、防回归，是投入产出比最高的一项。实现见 `BearHttpServerTests`，SwiftPM 与 Xcode 双端验证通过。
 3. **P0 — 修工程一致性**（✅ 已完成）：`MARKETING_VERSION` 由 `1.0` 对齐到当前 tag `0.2.0`（8 处构建配置）；xcodeproj 的未提交改动已在早前提交（新 target 注册与 scheme）。注：若包含 P0-1 路由功能发布下一个版本，应按语义化版本升到 `0.3.0`。
-4. **P1 — Swift handler 超时**：给 async handler 加可配置超时（复用 idle guard 思路），对齐 ObjC 侧已有的 504 兜底（对应待办 P1-2）。
+4. **P1 — Swift handler 超时**（✅ 已完成）：`HTTPServerConfiguration.handlerTimeout`（默认 0 禁用，向后兼容）；连接层用 one-shot continuation 让 handler 与定时器竞速，超时回 504，对齐 ObjC 侧兜底（对应待办 P1-2）。4 项测试覆盖超时/快速 handler/禁用/并发不串。
 5. **P1 — ObjC 配置补齐**（新纳入）：`BRHTTPServerConfiguration` 透传 `maxConnections` 与 `connectionIdleTimeout`，让 ObjC 调用方能用到内核已有的资源限制（对应待办 P1-3，改动极小）。
 6. **P1 — 真流式 body**：请求与响应双侧改为边读边处理 / 边产边发 + 背压，突破 16MB 全量内存限制（对应待办 P1-4）。这是 P1 中唯一的大工程项，排在低成本项之后。
 7. **P2 — 按需特性**（新纳入归类）：WebSocket、gzip/deflate、条件请求（ETag / `If-Modified-Since`）。前两者工作量大或可库外解决；条件请求成本较低，可在有需求时优先做。
