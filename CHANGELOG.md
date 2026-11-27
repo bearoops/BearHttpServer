@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added configurable `HTTPServerConfiguration.handlerTimeout` for Swift async
   handlers. A timed-out handler now receives a 504 response (matching the ObjC
   bridge's fallback); default `0` disables the timeout.
+- Exposed `maxConnections` and `connectionIdleTimeout` on
+  `BRHTTPServerConfiguration` so Objective-C callers can use the core resource
+  limits (defaults 128 and 60, matching Swift).
 
 ## [0.2.0] - 2026-11-27
 

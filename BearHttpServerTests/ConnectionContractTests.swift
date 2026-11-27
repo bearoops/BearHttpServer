@@ -156,4 +156,46 @@ struct ConnectionContractTests {
         #expect(fastResponse.hasPrefix("HTTP/1.1 200"))
         #expect(fastResponse.contains("ok-/fast"))
     }
+
+    // MARK: - P1：ObjC 配置透传
+
+    @Test func objcConfigurationDefaultsMatchSwift() {
+        let configuration = ObjCHTTPServerConfiguration()
+        #expect(configuration.maxConnections == 128)
+        #expect(configuration.connectionIdleTimeout == 60)
+    }
+
+    @Test func objcConfigurationPushesMaxConnectionsToServer() async throws {
+        let configuration = ObjCHTTPServerConfiguration()
+        configuration.maxConnections = 1
+        let server = ObjCHTTPServer(configuration: configuration) { _, completion in
+            completion(ObjCHTTPResponse.text("ok", statusCode: 200))
+        }
+        let port = try await startObjCServer(server)
+        defer { Task { await stopObjCServer(server) } }
+
+        // 第一条连接占住唯一名额
+        let first = makeRawConnection(port: port)
+        defer { first.cancel() }
+        try await sendRaw("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", on: first)
+        _ = try await receiveRaw(from: first)
+
+        // 第二条连接不应得到响应
+        let second = makeRawConnection(port: port)
+        defer { second.cancel() }
+        try await sendRaw("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", on: second)
+        let oneShot = OnceFlag()
+        let responded = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            second.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, error in
+                if oneShot.claim() {
+                    c.resume(returning: (data?.isEmpty == false) && error == nil)
+                }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: 1 * 1_000_000_000)
+                if oneShot.claim() { c.resume(returning: false) }
+            }
+        }
+        #expect(!responded)
+    }
 }

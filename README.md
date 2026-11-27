@@ -102,6 +102,8 @@ classes for Objective-C clients:
 
 BRHTTPServerConfiguration *configuration = [[BRHTTPServerConfiguration alloc] init];
 configuration.port = 8080;
+configuration.maxConnections = 64;          // defaults to 128
+configuration.connectionIdleTimeout = 30;   // defaults to 60; 0 disables
 
 BRHTTPServer *server = [[BRHTTPServer alloc]
     initWithConfiguration:configuration

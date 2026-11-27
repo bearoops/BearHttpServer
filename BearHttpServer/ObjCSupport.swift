@@ -89,6 +89,11 @@ public final class ObjCHTTPServerConfiguration: NSObject {
     @objc public var maxHeaderBytes: Int
     @objc public var maxBodyBytes: Int
     @objc public var serverHeader: String?
+    /// Maximum number of simultaneously open TCP connections. Defaults to 128.
+    @objc public var maxConnections: Int
+    /// Seconds a connection may stay idle before it is closed. `0` disables
+    /// the timeout. Defaults to 60, matching the Swift configuration.
+    @objc public var connectionIdleTimeout: TimeInterval
     /// Maximum time to wait for an Objective-C handler to call its completion.
     /// Defaults to 30 seconds; a timed-out request receives HTTP 504.
     @objc public var handlerTimeout: TimeInterval
@@ -105,6 +110,8 @@ public final class ObjCHTTPServerConfiguration: NSObject {
         self.maxHeaderBytes = maxHeaderBytes
         self.maxBodyBytes = maxBodyBytes
         self.serverHeader = serverHeader
+        self.maxConnections = 128
+        self.connectionIdleTimeout = 60
         self.handlerTimeout = 30
     }
 
@@ -145,7 +152,9 @@ public final class ObjCHTTPServerConfiguration: NSObject {
             port: UInt16(port),
             maxHeaderBytes: maxHeaderBytes,
             maxBodyBytes: maxBodyBytes,
-            serverHeader: serverHeader
+            serverHeader: serverHeader,
+            maxConnections: maxConnections,
+            connectionIdleTimeout: connectionIdleTimeout
         )
     }
 }
