@@ -174,6 +174,7 @@ final class HTTPConnection: @unchecked Sendable {
             var feedFailed = false
             while remaining > 0 {
                 if !buffer.isEmpty {
+                    // Drop the excess while total buffer is bigger than contentLength
                     let count = min(remaining, buffer.count)
                     let chunk = buffer.prefix(count)
                     await stream.feed(Data(chunk))
@@ -653,6 +654,11 @@ final class HTTPConnection: @unchecked Sendable {
         ) else {
             throw StreamError.respond(.badRequest, "Request headers are not valid UTF-8.")
         }
+        /**
+         POST /upload HTTP/1.1
+         Host: localhost
+         Content-Length: 11
+         */
         let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
             throw StreamError.respond(.badRequest, "Missing request line.")
