@@ -228,6 +228,8 @@ let server = HTTPServer { _ in
   bodies are encoded and decoded, and what the related tests cover.
 - [Routing plan](docs/routing-plan.md) — design and implementation notes for
   the optional routing extension.
+- [Streaming bodies](docs/streaming.md) — request/response streaming APIs,
+  chunk-by-chunk mechanics, back-pressure, limits and test coverage.
 
 ## License
 
