@@ -25,7 +25,10 @@ struct StreamingBodyTests {
 
         let connection = makeRawConnection(port: port)
         defer { connection.cancel() }
-        // Split the body across several TCP writes.
+        // Two writes may coalesce into one TCP segment (or arrive as several)
+        // — TCP does not preserve write boundaries. Assert only that every
+        // byte is delivered through the stream; chunk boundaries are covered
+        // by streamingHandlerProcessesBeforeBodyCompletes.
         try await sendRaw(
             "POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\n\r\n",
             on: connection
@@ -34,9 +37,7 @@ struct StreamingBodyTests {
         try await sendRaw("world", on: connection)
         let response = try await receiveRaw(from: connection)
         #expect(response.hasPrefix("HTTP/1.1 200 OK"))
-        let (data, chunkCount) = await received.snapshot()
-        #expect(data == Data("hello world".utf8))
-        #expect(chunkCount >= 2)
+        #expect(await received.get() == Data("hello world".utf8))
     }
 
     @Test func streamingHandlerProcessesBeforeBodyCompletes() async throws {
@@ -213,10 +214,8 @@ struct StreamingBodyTests {
 
 private actor LockedData {
     private var storage = Data()
-    private var count = 0
-    func append(_ chunk: Data) { storage.append(chunk); count += 1 }
+    func append(_ chunk: Data) { storage.append(chunk) }
     func get() -> Data { storage }
-    func snapshot() -> (Data, Int) { (storage, count) }
 }
 
 private actor LockedFlag {
