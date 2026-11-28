@@ -20,6 +20,7 @@ final class ServerViewModel: ObservableObject {
     @Published var host = "0.0.0.0"
     @Published var portText = "8080"
     @Published private(set) var isRunning = false
+    @Published private(set) var isBusy = false
     @Published private(set) var boundPort: UInt16?
     @Published private(set) var statusMessage = "尚未启动"
     @Published private(set) var requests: [ServerRequestRecord] = []
@@ -34,6 +35,7 @@ final class ServerViewModel: ObservableObject {
     }
 
     func toggle() async {
+        guard !isBusy else { return }
         if isRunning {
             await stop()
         } else {
@@ -42,6 +44,9 @@ final class ServerViewModel: ObservableObject {
     }
 
     func start() async {
+        isBusy = true
+        defer { isBusy = false }
+
         let address = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else {
             statusMessage = "请填写绑定地址"
@@ -52,6 +57,7 @@ final class ServerViewModel: ObservableObject {
             return
         }
 
+        statusMessage = "正在启动…"
         let configuration = HTTPServerConfiguration(host: address, port: port)
         let server = HTTPServer(configuration: configuration) { [weak self] request in
             await self?.record(request)
@@ -81,6 +87,10 @@ final class ServerViewModel: ObservableObject {
     }
 
     func stop() async {
+        isBusy = true
+        defer { isBusy = false }
+        statusMessage = "正在停止…"
+
         let current = server
         server = nil
         await current?.stop()
@@ -111,10 +121,12 @@ struct ServerView: View {
                     Text("本机 · 127.0.0.1").tag("127.0.0.1")
                     Text("局域网 · 0.0.0.0").tag("0.0.0.0")
                 }
+                .disabled(model.isRunning)
                 TextField("端口", text: $model.portText)
 #if os(iOS)
                     .keyboardType(.numberPad)
 #endif
+                    .disabled(model.isRunning)
                 Button {
                     Task { await model.toggle() }
                 } label: {
@@ -123,8 +135,8 @@ struct ServerView: View {
                         systemImage: model.isRunning ? "stop.circle.fill" : "play.circle.fill"
                     )
                 }
+                .disabled(model.isBusy)
             }
-            .disabled(model.isRunning)
 
             Section("状态") {
                 Label(

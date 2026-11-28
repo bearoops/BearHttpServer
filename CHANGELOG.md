@@ -7,11 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-28
+
+### Added
+
+- `BearHttpServerDemo`: a server page and a client page. The server page can
+  bind `127.0.0.1` or `0.0.0.0`, start/stop `HTTPServer`, show its address and
+  recent requests; the client page sends HTTP requests and shows responses.
+  The demo target now links and embeds `BearHttpServer.framework`, with a local
+  network usage description and an ATS local-networking exception.
+- A streaming design document under `docs/`.
+
 ### Changed
 
 - Replaced all `NSLock` usage in tests with actors (`OnceFlag`, `LockedData`,
   `LockedFlag`, `LockedCounter`, `LockedStrings`) for a uniform Swift
   Concurrency model. No production code was affected.
+- Demo target bundle identifier changed to `com.bear.server.demo` with
+  automatic signing settings.
+- Library `MARKETING_VERSION` bumped to 0.5.0.
+
+### Fixed
+
+- Demo server page: the "Stop Server" button was disabled together with the
+  configuration fields while the server was running. The button stays enabled,
+  shows immediate start/stop status and ignores repeated taps.
 
 ## [0.4.0] - 2026-11-28
 
@@ -115,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Actively close sockets when `Connection: close` is negotiated and release
   listener callback captures.
 
-[Unreleased]: https://github.com/bearoops/BearHttpServer/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/bearoops/BearHttpServer/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/bearoops/BearHttpServer/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/bearoops/BearHttpServer/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bearoops/BearHttpServer/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bearoops/BearHttpServer/compare/v0.1.0...v0.2.0
