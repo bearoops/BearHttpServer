@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
