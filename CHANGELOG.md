@@ -7,25 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced all `NSLock` usage in tests with actors (`OnceFlag`, `LockedData`,
+  `LockedFlag`, `LockedCounter`, `LockedStrings`) for a uniform Swift
+  Concurrency model. No production code was affected.
+
+## [0.4.0] - 2026-11-28
+
 ### Added
 
-- New optional product `BearHttpServerRouting`: a lightweight `Router` with
-  path-segment matching (`:param`, `*`), method dispatch (404 / 405 with
-  `Allow`), and `HTTPRequest` parsing helpers (`path`, `query`, `queryItems`,
-  `cookies`). Handlers receive `(HTTPRequest, RouteParams)` so the core request
-  type stays untouched.
-- Added six regression tests for response and connection semantics: HEAD keeps
-  `Content-Length` with no body, RFC 1123 `Date` format, default 404 handler,
-  duplicate `Content-Length` rejected with 400, `maxConnections` limit, and
-  idle-timeout connection closure.
-- Added configurable `HTTPServerConfiguration.handlerTimeout` for Swift async
-  handlers. A timed-out handler now receives a 504 response (matching the ObjC
+- Configurable `HTTPServerConfiguration.handlerTimeout` for Swift async
+  handlers. A timed-out handler receives a 504 response (matching the ObjC
   bridge's fallback); default `0` disables the timeout.
 - Exposed `maxConnections` and `connectionIdleTimeout` on
   `BRHTTPServerConfiguration` so Objective-C callers can use the core resource
   limits (defaults 128 and 60, matching Swift).
-- Conditional requests: `GET`/`HEAD` responses now carry an auto-generated
-  `ETag` (FNV-1a of the body, overridable via the `etag` response header).
+- Conditional requests: `GET`/`HEAD` responses carry an auto-generated `ETag`
+  (FNV-1a of the body, overridable via the `etag` response header).
   `If-None-Match` (`*`, lists, weak `W/` tags) and `If-Modified-Since` (when the
   handler sets `last-modified`) return a bodyless 304 on a match. New
   `HTTPStatusCode.notModified` (304).
@@ -34,6 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HTTPResponse.bodyStream` produces response chunks with back-pressure.
   Streaming requests reject chunked framing (501); HTTP/1.0 streaming responses
   collect into a Content-Length body. Standard handler API unchanged.
+
+## [0.3.0] - 2026-11-27
+
+### Added
+
+- New optional product `BearHttpServerRouting`: a lightweight `Router` with
+  path-segment matching (`:param`, `*`), method dispatch (404 / 405 with
+  `Allow`), and `HTTPRequest` parsing helpers (`path`, `query`, `queryItems`,
+  `cookies`). Handlers receive `(HTTPRequest, RouteParams)` so the core request
+  type stays untouched.
+- Six regression tests for response and connection semantics: HEAD keeps
+  `Content-Length` with no body, RFC 1123 `Date` format, default 404 handler,
+  duplicate `Content-Length` rejected with 400, `maxConnections` limit, and
+  idle-timeout connection closure.
 
 ## [0.2.0] - 2026-11-27
 
@@ -102,6 +115,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Actively close sockets when `Connection: close` is negotiated and release
   listener callback captures.
 
-[Unreleased]: https://github.com/bearoops/BearHttpServer/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/bearoops/BearHttpServer/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/bearoops/BearHttpServer/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/bearoops/BearHttpServer/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bearoops/BearHttpServer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bearoops/BearHttpServer/releases/tag/v0.1.0
