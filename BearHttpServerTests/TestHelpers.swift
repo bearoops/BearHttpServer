@@ -134,11 +134,10 @@ func stopObjCServer(_ server: ObjCHTTPServer) async {
     }
 }
 
-final class OnceFlag: @unchecked Sendable {
-    private let lock = NSLock()
+/// Actor-backed one-shot flag: the first caller to claim wins.
+actor OnceFlag {
     private var used = false
     func claim() -> Bool {
-        lock.lock(); defer { lock.unlock() }
         guard !used else { return false }
         used = true
         return true

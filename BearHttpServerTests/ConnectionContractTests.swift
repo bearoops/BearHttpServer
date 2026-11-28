@@ -35,15 +35,12 @@ struct ConnectionContractTests {
         let oneShot = OnceFlag()
         let responded = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             second.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, error in
-                if oneShot.claim() {
-                    c.resume(returning: (data?.isEmpty == false) && error == nil)
-                }
+                let result = (data?.isEmpty == false) && error == nil
+                Task { if await oneShot.claim() { c.resume(returning: result) } }
             }
             Task {
                 try? await Task.sleep(nanoseconds: 1 * 1_000_000_000)
-                if oneShot.claim() {
-                    c.resume(returning: false)
-                }
+                if await oneShot.claim() { c.resume(returning: false) }
             }
         }
         #expect(!responded)
@@ -65,13 +62,12 @@ struct ConnectionContractTests {
         let oneShot = OnceFlag()
         let ended = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, isComplete, error in
-                if oneShot.claim() {
-                    c.resume(returning: error != nil || isComplete)
-                }
+                let result = error != nil || isComplete
+                Task { if await oneShot.claim() { c.resume(returning: result) } }
             }
             Task {
                 try? await Task.sleep(nanoseconds: 3 * 1_000_000_000)
-                if oneShot.claim() { c.resume(returning: false) }
+                if await oneShot.claim() { c.resume(returning: false) }
             }
         }
         #expect(ended)
@@ -187,13 +183,12 @@ struct ConnectionContractTests {
         let oneShot = OnceFlag()
         let responded = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             second.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, error in
-                if oneShot.claim() {
-                    c.resume(returning: (data?.isEmpty == false) && error == nil)
-                }
+                let result = (data?.isEmpty == false) && error == nil
+                Task { if await oneShot.claim() { c.resume(returning: result) } }
             }
             Task {
                 try? await Task.sleep(nanoseconds: 1 * 1_000_000_000)
-                if oneShot.claim() { c.resume(returning: false) }
+                if await oneShot.claim() { c.resume(returning: false) }
             }
         }
         #expect(!responded)

@@ -14,11 +14,9 @@ struct StreamingBodyTests {
 
     @Test func streamingHandlerReadsBodyInChunks() async throws {
         let received = LockedData()
-        let chunksSeen = LockedCounter()
         let server = HTTPServer(streamingHandler: { _, stream in
             while let chunk = try? await stream.read() {
-                received.append(chunk)
-                chunksSeen.bump()
+                await received.append(chunk)
             }
             return .text("done")
         })
@@ -36,8 +34,9 @@ struct StreamingBodyTests {
         try await sendRaw("world", on: connection)
         let response = try await receiveRaw(from: connection)
         #expect(response.hasPrefix("HTTP/1.1 200 OK"))
-        #expect(received.get() == Data("hello world".utf8))
-        #expect(chunksSeen.value >= 2)
+        let (data, chunkCount) = await received.snapshot()
+        #expect(data == Data("hello world".utf8))
+        #expect(chunkCount >= 2)
     }
 
     @Test func streamingHandlerProcessesBeforeBodyCompletes() async throws {
@@ -81,7 +80,7 @@ struct StreamingBodyTests {
                     guard let _ = try await stream.read() else { break }
                 }
             } catch {
-                errorSeen.set()
+                await errorSeen.set()
             }
             return .text("ok")
         }
@@ -95,7 +94,7 @@ struct StreamingBodyTests {
         )
         try await sendRaw("this is way too long", on: connection)
         _ = try await receiveRaw(from: connection)
-        #expect(errorSeen.get())
+        #expect(await errorSeen.get())
     }
 
     @Test func chunkedRequestOnStreamingHandlerReturns501() async throws {
@@ -116,8 +115,8 @@ struct StreamingBodyTests {
         let index = LockedCounter()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, headers: ["content-type": "text/plain"], bodyStream: {
-                if index.bumpAndGet() < chunks.count {
-                    let i = index.value - 1
+                if await index.bumpAndGet() < chunks.count {
+                    let i = await index.value - 1
                     return Data(chunks[i].utf8)
                 }
                 return nil
@@ -142,15 +141,15 @@ struct StreamingBodyTests {
         let pulls = LockedCounter()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, bodyStream: {
-                let n = pulls.bumpAndGet()
-                order.append("pull-\(n)")
+                let n = await pulls.bumpAndGet()
+                await order.append("pull-\(n)")
                 return n < 3 ? Data("chunk\(n + 1)".utf8) : nil
             })
         }
         let port = try await server.start()
         defer { Task { await server.stop() } }
         _ = try await rawResponse(port: port)
-        #expect(order.get() == ["pull-0", "pull-1", "pull-2", "pull-3"])
+        #expect(await order.get() == ["pull-0", "pull-1", "pull-2", "pull-3"])
     }
 
     @Test func streamingResponseDecodesCorrectlyOverURLSession() async throws {
@@ -158,7 +157,7 @@ struct StreamingBodyTests {
         let counter = LockedCounter()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, bodyStream: {
-                let i = counter.bumpAndGet()
+                let i = await counter.bumpAndGet()
                 return i < chunks.count ? Data(chunks[i].utf8) : nil
             })
         }
@@ -192,8 +191,8 @@ struct StreamingBodyTests {
         let sent = LockedFlag()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, bodyStream: {
-                if sent.get() { return nil }
-                sent.set()
+                if await sent.get() { return nil }
+                await sent.set()
                 return Data("legacy".utf8)
             })
         }
@@ -212,31 +211,29 @@ struct StreamingBodyTests {
 
 // MARK: - Thread-safe test utilities
 
-private final class LockedData: @unchecked Sendable {
-    private let lock = NSLock()
+private actor LockedData {
     private var storage = Data()
-    func append(_ chunk: Data) { lock.lock(); defer { lock.unlock() }; storage.append(chunk) }
-    func get() -> Data { lock.lock(); defer { lock.unlock() }; return storage }
+    private var count = 0
+    func append(_ chunk: Data) { storage.append(chunk); count += 1 }
+    func get() -> Data { storage }
+    func snapshot() -> (Data, Int) { (storage, count) }
 }
 
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
+private actor LockedFlag {
     private var flag = false
-    func set() { lock.lock(); defer { lock.unlock() }; flag = true }
-    func get() -> Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    func set() { flag = true }
+    func get() -> Bool { flag }
 }
 
-private final class LockedCounter: @unchecked Sendable {
-    private let lock = NSLock()
+private actor LockedCounter {
     private var n = 0
-    func bump() { lock.lock(); defer { lock.unlock() }; n += 1 }
-    func bumpAndGet() -> Int { lock.lock(); defer { lock.unlock() }; n += 1; return n - 1 }
-    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+    func bump() { n += 1 }
+    func bumpAndGet() -> Int { n += 1; return n - 1 }
+    var value: Int { n }
 }
 
-private final class LockedStrings: @unchecked Sendable {
-    private let lock = NSLock()
+private actor LockedStrings {
     private var items: [String] = []
-    func append(_ s: String) { lock.lock(); defer { lock.unlock() }; items.append(s) }
-    func get() -> [String] { lock.lock(); defer { lock.unlock() }; return items }
+    func append(_ s: String) { items.append(s) }
+    func get() -> [String] { items }
 }
