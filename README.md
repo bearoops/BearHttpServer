@@ -187,6 +187,41 @@ let server = HTTPServer(handler: router.handler())
   `cookie(_:)`. Malformed percent escapes are preserved rather than trapping.
 - See [routing plan](docs/routing-plan.md) for design notes and scope.
 
+## Streaming bodies
+
+For large uploads or generated responses, use the streaming APIs. Request
+bodies are read chunk by chunk instead of being fully buffered; response bodies
+are produced chunk by chunk with back-pressure (the next chunk is only pulled
+after the previous one has been sent).
+
+```swift
+// Streaming request: read the body incrementally
+let server = HTTPServer(streamingHandler: { request, body in
+    var total = 0
+    while let chunk = try await body.read() {   // nil ends the body
+        total += chunk.count
+    }
+    return .text("received \(total) bytes")
+})
+
+// Streaming response: produce chunks one at a time
+let server = HTTPServer { _ in
+    HTTPResponse(status: .ok, bodyStream: {
+        // return Data for the next chunk, nil when done
+        ...
+    })
+}
+```
+
+- The standard `HTTPServer(handler:)` API is unchanged and still buffers bodies.
+- Streaming requests still enforce `maxBodyBytes` as a **total** limit; an
+  over-limit read throws `RequestBodyStreamError.payloadTooLarge`. The benefit
+  is memory: only the current chunk is held, not the entire body.
+- Streaming requests do **not** support `Transfer-Encoding: chunked` request
+  bodies (they receive 501); use `Content-Length` framing.
+- HTTP/1.0 streaming responses fall back to a collected `Content-Length` body;
+  chunked streaming requires HTTP/1.1.
+
 ## Documentation
 
 - [Chunked transfer encoding](docs/chunked.md) — how chunked request/response

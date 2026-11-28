@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `If-None-Match` (`*`, lists, weak `W/` tags) and `If-Modified-Since` (when the
   handler sets `last-modified`) return a bodyless 304 on a match. New
   `HTTPStatusCode.notModified` (304).
+- Streaming bodies: `HTTPServer(streamingHandler:)` with `RequestBodyStream`
+  reads request bodies chunk by chunk (total still bounded by `maxBodyBytes`);
+  `HTTPResponse.bodyStream` produces response chunks with back-pressure.
+  Streaming requests reject chunked framing (501); HTTP/1.0 streaming responses
+  collect into a Content-Length body. Standard handler API unchanged.
 
 ## [0.2.0] - 2026-11-27
 

@@ -166,6 +166,74 @@ public struct HTTPRequest: Sendable {
     }
 }
 
+/// Errors raised while reading a streaming request body.
+public enum RequestBodyStreamError: Error, Sendable, Equatable {
+    /// Total bytes exceeded the configured `maxBodyBytes`.
+    case payloadTooLarge
+}
+
+/// A streaming request body: the connection feeds decoded chunks in, and the
+/// handler reads them one at a time. Reading never materializes the whole body.
+/// A `nil` read result means the body ended normally; a thrown error means it
+/// was truncated or rejected.
+public actor RequestBodyStream {
+    private var chunks: [Data] = []
+    private var waiters: [CheckedContinuation<Data?, Error>] = []
+    private var finished = false
+    private var failure: Error?
+    private var totalBytes = 0
+    private let maxBytes: Int
+
+    public init(maxBytes: Int) {
+        self.maxBytes = max(0, maxBytes)
+    }
+
+    /// Reads the next chunk. Returns `nil` at normal end of body.
+    public func read() async throws -> Data? {
+        if let failure { throw failure }
+        if let chunk = chunks.first {
+            chunks.removeFirst()
+            return chunk
+        }
+        if finished { return nil }
+        return try await withCheckedThrowingContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    /// Feeds one decoded chunk. Called by the connection as bytes arrive.
+    func feed(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        totalBytes += chunk.count
+        if totalBytes > maxBytes {
+            fail(RequestBodyStreamError.payloadTooLarge)
+            return
+        }
+        if !waiters.isEmpty {
+            waiters.removeFirst().resume(returning: chunk)
+        } else {
+            chunks.append(chunk)
+        }
+    }
+
+    /// Marks the body complete, waking any pending readers with `nil`.
+    func finish() {
+        finished = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume(returning: nil) }
+    }
+
+    private func fail(_ error: Error) {
+        failure = error
+        finished = true
+        let pending = waiters
+        waiters.removeAll()
+        chunks.removeAll()
+        for waiter in pending { waiter.resume(throwing: error) }
+    }
+}
+
 /// An HTTP response status code and its canonical reason phrase.
 public struct HTTPStatusCode: Hashable, Sendable, CustomStringConvertible {
     public let code: Int
@@ -196,11 +264,18 @@ public struct HTTPStatusCode: Hashable, Sendable, CustomStringConvertible {
     public static let serviceUnavailable = HTTPStatusCode(code: 503, reasonPhrase: "Service Unavailable")
 }
 
+/// A closure producing response body chunks one at a time; `nil` ends the body.
+public typealias HTTPResponseBodyStream = @Sendable () async -> Data?
+
 /// An HTTP response produced by a request handler.
 public struct HTTPResponse: Sendable {
     public let status: HTTPStatusCode
     public let headers: HTTPHeaders
     public let body: Data
+    /// When set, the body is produced incrementally and sent as a stream of
+    /// chunks. `body` is ignored on the wire. The sender awaits each send
+    /// before pulling the next chunk, giving natural back-pressure.
+    public let bodyStream: HTTPResponseBodyStream?
 
     public init(
         status: HTTPStatusCode = .ok,
@@ -210,6 +285,20 @@ public struct HTTPResponse: Sendable {
         self.status = status
         self.headers = headers
         self.body = body
+        self.bodyStream = nil
+    }
+
+    /// Creates a streaming response. `transfer-encoding: chunked` is added by
+    /// the server automatically (for HTTP/1.1); do not set a Content-Length.
+    public init(
+        status: HTTPStatusCode = .ok,
+        headers: HTTPHeaders = HTTPHeaders(),
+        bodyStream: @escaping HTTPResponseBodyStream
+    ) {
+        self.status = status
+        self.headers = headers
+        self.body = Data()
+        self.bodyStream = bodyStream
     }
 
     public static func text(

@@ -94,6 +94,7 @@ private actor HandlerResponseOnce {
 
 final class HTTPConnection: @unchecked Sendable {
     typealias RequestHandler = @Sendable (HTTPRequest) async -> HTTPResponse
+    typealias StreamingRequestHandler = @Sendable (HTTPRequest, RequestBodyStream) async -> HTTPResponse
 
     private static let headerSeparator: [UInt8] = [13, 10, 13, 10] // CRLF CRLF
 
@@ -101,20 +102,120 @@ final class HTTPConnection: @unchecked Sendable {
     private let configuration: HTTPServerConfiguration
     private let gate: ConnectionGate
     private let handler: RequestHandler
+    private let streamingHandler: StreamingRequestHandler?
 
     init(
         connection: NWConnection,
         configuration: HTTPServerConfiguration,
         gate: ConnectionGate,
-        handler: @escaping RequestHandler
+        handler: @escaping RequestHandler,
+        streamingHandler: StreamingRequestHandler? = nil
     ) {
         self.connection = connection
         self.configuration = configuration
         self.gate = gate
         self.handler = handler
+        self.streamingHandler = streamingHandler
+    }
+
+    /// Streaming request path: parses headers, then feeds body bytes to the
+    /// handler incrementally while it reads them via `RequestBodyStream`.
+    private func runStreaming(handler: @escaping StreamingRequestHandler) async {
+        var buffer = Data()
+        let idleGuard = IdleTimeoutGuard(
+            connection: connection, timeout: configuration.connectionIdleTimeout
+        )
+        defer {
+            Task { await idleGuard.disarm() }
+            connection.cancel()
+        }
+
+        while true {
+            let header: StreamingHeader
+            do {
+                guard let parsed = try Self.parseStreamingHeader(
+                    from: buffer, configuration: configuration
+                ) else {
+                    await idleGuard.arm()
+                    let (chunk, isComplete) = try await receive()
+                    await idleGuard.disarm()
+                    buffer.append(chunk)
+                    if isComplete { return }
+                    continue
+                }
+                header = parsed
+            } catch StreamError.respond(let status, let message, let version) {
+                await sendError(status: status, message: message, version: version)
+                return
+            } catch {
+                return
+            }
+
+            // Chunked request bodies are not supported on the streaming path;
+            // tell the caller to use the regular handler instead.
+            guard case .fixed(let contentLength) = header.plan else {
+                await sendError(
+                    status: .notImplemented,
+                    message: "Streaming handler does not support chunked request bodies.",
+                    version: header.request.version
+                )
+                return
+            }
+
+            guard await gate.beginRequest() else { return }
+            if header.wantsContinue { await sendContinue() }
+
+            let stream = RequestBodyStream(maxBytes: configuration.maxBodyBytes)
+            // Start the handler first: it suspends on read() until we feed bytes.
+            let responseTask = Task { await handler(header.request, stream) }
+
+            var remaining = contentLength
+            buffer = Data(buffer.subdata(in: header.bodyStart..<buffer.count))
+            var feedFailed = false
+            while remaining > 0 {
+                if !buffer.isEmpty {
+                    let count = min(remaining, buffer.count)
+                    let chunk = buffer.prefix(count)
+                    await stream.feed(Data(chunk))
+                    buffer = Data(buffer.dropFirst(count))
+                    remaining -= count
+                } else {
+                    await idleGuard.arm()
+                    let received = try? await receive()
+                    await idleGuard.disarm()
+                    guard let received else { feedFailed = true; break }
+                    if received.0.isEmpty && received.1 { feedFailed = true; break }
+                    buffer.append(received.0)
+                }
+            }
+            await stream.finish()
+            if feedFailed {
+                responseTask.cancel()
+                await sendError(
+                    status: .badRequest, message: "Truncated request body.",
+                    version: header.request.version
+                )
+                _ = await gate.endRequest()
+                return
+            }
+
+            let response = await responseTask.value
+            let shouldContinue = await send(
+                response,
+                version: header.request.version,
+                close: header.close,
+                includeBody: header.request.method != .head
+            )
+            let shouldDrain = await gate.endRequest()
+            if !shouldContinue || shouldDrain { return }
+        }
     }
 
     func run() async {
+        if let streamingHandler {
+            await runStreaming(handler: streamingHandler)
+            return
+        }
         var buffer = Data()
         let idleGuard = IdleTimeoutGuard(
             connection: connection,
@@ -251,30 +352,55 @@ final class HTTPConnection: @unchecked Sendable {
             headers["content-type"] = "application/octet-stream"
         }
 
+        // A streaming body is sent as a sequence of chunks. HTTP/1.1 uses
+        // chunked framing; HTTP/1.0 has no chunked support, so we collect the
+        // stream into a single Content-Length body instead.
+        let streamBody = response.bodyStream
+        let usesStream = streamBody != nil && statusAllowsBody && includeBody
+        if usesStream && version == .http11 {
+            headers["transfer-encoding"] = "chunked"
+            headers["content-length"] = nil
+        } else if usesStream {
+            headers["transfer-encoding"] = nil
+            // HTTP/1.0: length unknown until the stream is drained below.
+            headers["content-length"] = nil
+        }
+
         // Serialize the header collection into wire format: one
         // "name: value\r\n" line per field, then a blank line to end the block.
-        // Sorting the names keeps output deterministic, which makes the raw
-        // response byte-for-byte predictable in tests.
-        for (name, value) in headers.all.sorted(by: { $0.key < $1.key }) {
-            // Defensive cleanup at the serialization boundary. HTTPHeaders
-            // already sanitizes on insertion, but doing it again here means a
-            // value can never escape into a new header line at this last step.
-            let safeName = sanitizedHTTPField(name)
-            // Ordinary headers contain a single value. Set-Cookie is special:
-            // cookies cannot be folded into one comma-separated line, so
-            // HTTPHeaders stores several of them as "a\r\nSet-Cookie: b".
-            // Splitting on CRLF restores one wire line per cookie. Keeping
-            // empty subsequences preserves the original line structure.
-            for line in value.split(separator: "\r\n", omittingEmptySubsequences: false) {
-                let safeLine = sanitizedHTTPField(String(line))
-                payload.append(contentsOf: safeName.utf8)
-                payload.append(contentsOf: [58, 32]) // ": "
-                payload.append(contentsOf: safeLine.utf8)
-                payload.append(contentsOf: [13, 10]) // CRLF
+        payload.append(Self.serializeHeaders(headers))
+
+        if usesStream, let streamBody {
+            if version == .http11 {
+                do {
+                    try await sendAll(payload)
+                    while let chunk = await streamBody() {
+                        guard !chunk.isEmpty else { continue }
+                        // Await each send before pulling the next chunk: back-pressure.
+                        try await sendAll(Self.chunkFrame(chunk))
+                    }
+                    try await sendAll(Data("0\r\n\r\n".utf8))
+                    return !close
+                } catch {
+                    return false
+                }
+            } else {
+                // HTTP/1.0: collect the stream, then send with Content-Length.
+                var collected = Data()
+                while let chunk = await streamBody() { collected.append(chunk) }
+                headers["content-length"] = String(collected.count)
+                var payload10 = Data()
+                payload10.append(contentsOf: "\(version.rawValue) \(status.code) \(reasonPhrase)\r\n".utf8)
+                payload10.append(Self.serializeHeaders(headers))
+                payload10.append(collected)
+                do {
+                    try await sendAll(payload10)
+                    return !close
+                } catch {
+                    return false
+                }
             }
         }
-        // The empty CRLF line separates the header block from the body.
-        payload.append(contentsOf: [13, 10])
 
         if useChunked {
             payload.append(Self.chunkedEncoded(bodyToSend))
@@ -288,6 +414,24 @@ final class HTTPConnection: @unchecked Sendable {
         } catch {
             return false
         }
+    }
+
+    /// Serializes headers with a trailing blank line, deterministic ordering,
+    /// and defensive CRLF sanitization at the wire boundary.
+    private static func serializeHeaders(_ headers: HTTPHeaders) -> Data {
+        var payload = Data()
+        for (name, value) in headers.all.sorted(by: { $0.key < $1.key }) {
+            let safeName = sanitizedHTTPField(name)
+            for line in value.split(separator: "\r\n", omittingEmptySubsequences: false) {
+                let safeLine = sanitizedHTTPField(String(line))
+                payload.append(contentsOf: safeName.utf8)
+                payload.append(contentsOf: [58, 32]) // ": "
+                payload.append(contentsOf: safeLine.utf8)
+                payload.append(contentsOf: [13, 10]) // CRLF
+            }
+        }
+        payload.append(contentsOf: [13, 10]) // blank line ends the header block
+        return payload
     }
 
     private func sendAll(_ data: Data) async throws {
@@ -311,6 +455,19 @@ final class HTTPConnection: @unchecked Sendable {
         return encoding
             .split(separator: ",")
             .contains { String($0).trimmingCharacters(in: .whitespaces).lowercased() == "chunked" }
+    }
+
+    /// Formats one chunk frame without the terminating chunk: `<hex> CRLF
+    /// <data> CRLF`. Used by the streaming sender, which appends the final
+    /// `0\r\n\r\n` itself after the last chunk.
+    private static func chunkFrame(_ body: Data) -> Data {
+        var frame = Data()
+        let length = String(body.count, radix: 16)
+        frame.append(contentsOf: length.utf8)
+        frame.append(contentsOf: [13, 10])
+        frame.append(body)
+        frame.append(contentsOf: [13, 10])
+        return frame
     }
 
     /// Formats a body as RFC 7230 chunks: each chunk is `<hex length> CRLF
@@ -403,6 +560,9 @@ final class HTTPConnection: @unchecked Sendable {
     ) async -> HTTPResponse {
         guard request.method == .get || request.method == .head else { return response }
         guard (200..<300).contains(response.status.code) else { return response }
+        // Streaming bodies have no materialized bytes to hash for an ETag;
+        // leave them untouched and let the response be sent as-is.
+        guard response.bodyStream == nil else { return response }
 
         var headers = response.headers
         // Generate a strong ETag when the handler did not provide one.
@@ -455,6 +615,107 @@ final class HTTPConnection: @unchecked Sendable {
         /// Fully decoded body plus the index just past the terminating chunk.
         case complete(body: Data, end: Int)
         case error(HTTPStatusCode, String)
+    }
+
+    /// Body framing for the streaming request path.
+    private enum StreamingBodyPlan {
+        case fixed(length: Int)
+        case chunked
+    }
+
+    private struct StreamingHeader {
+        let request: HTTPRequest
+        let bodyStart: Int
+        let plan: StreamingBodyPlan
+        let wantsContinue: Bool
+        let close: Bool
+    }
+
+    /// Parses only the header block for the streaming path, leaving the body
+    /// bytes in the buffer for incremental delivery. Returns nil when more
+    /// bytes are needed; throws on malformed input.
+    private static func parseStreamingHeader(
+        from buffer: Data,
+        configuration: HTTPServerConfiguration
+    ) throws -> StreamingHeader? {
+        guard let headerEnd = findHeaderEnd(in: buffer) else {
+            if buffer.count > configuration.maxHeaderBytes {
+                throw StreamError.respond(.requestHeaderFieldsTooLarge, "Request headers are too large.")
+            }
+            return nil
+        }
+        if headerEnd > configuration.maxHeaderBytes {
+            throw StreamError.respond(.requestHeaderFieldsTooLarge, "Request headers are too large.")
+        }
+        let bodyStart = headerEnd + headerSeparator.count
+        guard let headerText = String(
+            data: buffer.subdata(in: 0..<headerEnd), encoding: .utf8
+        ) else {
+            throw StreamError.respond(.badRequest, "Request headers are not valid UTF-8.")
+        }
+        let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+        guard let requestLine = lines.first else {
+            throw StreamError.respond(.badRequest, "Missing request line.")
+        }
+        let parts = requestLine.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        guard parts.count == 3 else {
+            throw StreamError.respond(.badRequest, "Malformed request line.")
+        }
+        let method = HTTPMethod(rawValue: String(parts[0]))
+        let target = String(parts[1])
+        let version = HTTPVersion(rawValue: String(parts[2]))
+        var headers = HTTPHeaders()
+        for line in lines.dropFirst() {
+            guard !line.isEmpty else { break }
+            let pair = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2 else {
+                throw StreamError.respond(.badRequest, "Malformed request header.", version)
+            }
+            let name = String(pair[0]).trimmingCharacters(in: .whitespaces)
+            let value = String(pair[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else {
+                throw StreamError.respond(.badRequest, "Malformed request header name.", version)
+            }
+            headers.append(name, value: value)
+        }
+        let codings = (headers["transfer-encoding"] ?? "")
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+        let plan: StreamingBodyPlan
+        if codings.contains("chunked") {
+            guard codings.count == 1, headers["content-length"] == nil else {
+                throw StreamError.respond(
+                    .badRequest, "Conflicting Content-Length and Transfer-Encoding.", version
+                )
+            }
+            plan = .chunked
+        } else {
+            var length = 0
+            if let raw = headers["content-length"] {
+                let trimmed = raw.trimmingCharacters(in: .whitespaces)
+                guard let value = Int(trimmed), value >= 0 else {
+                    throw StreamError.respond(.badRequest, "Invalid Content-Length.", version)
+                }
+                length = value
+            }
+            plan = .fixed(length: length)
+        }
+        let request = HTTPRequest(
+            method: method, target: target, version: version, headers: headers, body: Data()
+        )
+        return StreamingHeader(
+            request: request,
+            bodyStart: bodyStart,
+            plan: plan,
+            wantsContinue: version == .http11 && expectsContinue(headers),
+            close: shouldClose(version: version, headers: headers)
+        )
+    }
+
+    /// Signals an error response from the streaming parser.
+    private enum StreamError: Error {
+        case respond(HTTPStatusCode, String, HTTPVersion = .http11)
     }
 
     private static func parseNextRequest(

@@ -59,9 +59,12 @@ private final class ConnectionContext: @unchecked Sendable {
 public actor HTTPServer {
     /// Handles a request and returns its response.
     public typealias RequestHandler = @Sendable (HTTPRequest) async throws -> HTTPResponse
+    /// Handles a request whose body is delivered incrementally via `stream`.
+    public typealias StreamingRequestHandler = @Sendable (HTTPRequest, RequestBodyStream) async throws -> HTTPResponse
 
     private let configuration: HTTPServerConfiguration
     private let handler: RequestHandler
+    private let streamingHandler: StreamingRequestHandler?
     private let queue = DispatchQueue(
         label: "com.bear.http.server",
         qos: .userInitiated,
@@ -77,6 +80,19 @@ public actor HTTPServer {
     ) {
         self.configuration = configuration
         self.handler = handler
+        self.streamingHandler = nil
+    }
+
+    /// Creates a server whose handler reads the request body incrementally.
+    /// Use this when requests may exceed `maxBodyBytes` as a whole but can be
+    /// processed chunk by chunk.
+    public init(
+        configuration: HTTPServerConfiguration = .localhost,
+        streamingHandler: @escaping StreamingRequestHandler
+    ) {
+        self.configuration = configuration
+        self.handler = { _ in HTTPResponse(status: .notFound) }
+        self.streamingHandler = streamingHandler
     }
 
     deinit {
@@ -254,20 +270,36 @@ public actor HTTPServer {
 
         let configuration = self.configuration
         let handler = self.handler
+        let streamingHandler = self.streamingHandler
+        let connectionStreamHandler: HTTPConnection.StreamingRequestHandler? = {
+            guard let streamingHandler else { return nil }
+            return { request, body in
+                do {
+                    return try await streamingHandler(request, body)
+                } catch {
+                    return HTTPResponse.text(
+                        "Internal Server Error: \(error.localizedDescription)",
+                        status: .internalServerError
+                    )
+                }
+            }
+        }()
         let session = HTTPConnection(
             connection: connection,
             configuration: configuration,
-            gate: gate
-        ) { request in
-            do {
-                return try await handler(request)
-            } catch {
-                return HTTPResponse.text(
-                    "Internal Server Error: \(error.localizedDescription)",
-                    status: .internalServerError
-                )
-            }
-        }
+            gate: gate,
+            handler: { request in
+                do {
+                    return try await handler(request)
+                } catch {
+                    return HTTPResponse.text(
+                        "Internal Server Error: \(error.localizedDescription)",
+                        status: .internalServerError
+                    )
+                }
+            },
+            streamingHandler: connectionStreamHandler
+        )
 
         connection.start(queue: queue)
 
