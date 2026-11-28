@@ -1,0 +1,96 @@
+//
+//  ContentView.swift
+//  BearHttpServerDemo
+//
+//  Created by 李招雄 on 2026/11/28.
+//
+
+import SwiftUI
+import SwiftData
+
+struct ContentView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query private var items: [Item]
+
+    var body: some View {
+        NavigationViewWrapper {
+            List {
+                Section("演示页面") {
+                    NavigationLink {
+                        ServerView()
+                    } label: {
+                        Label("服务端", systemImage: "server.rack")
+                    }
+                    NavigationLink {
+                        ClientView()
+                    } label: {
+                        Label("客户端", systemImage: "network")
+                    }
+                }
+                Section("记录") {
+                    ForEach(items) { item in
+                        NavigationLink {
+                            Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
+                        } label: {
+                            Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+                        }
+                    }
+                    .onDelete(perform: deleteItems)
+                }
+            }
+#if os(macOS)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
+#endif
+            .toolbar {
+#if os(iOS)
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    EditButton()
+                }
+#endif
+                ToolbarItem {
+                    Button(action: addItem) {
+                        Label("Add Item", systemImage: "plus")
+                    }
+                }
+            }
+        }
+    }
+
+    private func addItem() {
+        withAnimation {
+            let newItem = Item(timestamp: Date())
+            modelContext.insert(newItem)
+        }
+    }
+
+    private func deleteItems(offsets: IndexSet) {
+        withAnimation {
+            for index in offsets {
+                modelContext.delete(items[index])
+            }
+        }
+    }
+}
+
+fileprivate struct NavigationViewWrapper<Content: View>: View {
+    let content: () -> Content
+
+    var body: some View {
+#if os(macOS)
+        NavigationSplitView {
+            content()
+        } detail: {
+            Text("Select an item")
+        }
+#else
+        NavigationStack {
+            content()
+        }
+#endif
+    }
+}
+
+#Preview {
+    ContentView()
+        .modelContainer(for: Item.self, inMemory: true)
+}

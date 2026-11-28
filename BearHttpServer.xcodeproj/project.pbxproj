@@ -10,6 +10,8 @@
 		2803A29530B9D98A00796C77 /* BearHttpServerRouting.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2803A28C30B9D98A00796C77 /* BearHttpServerRouting.framework */; };
 		2803A2CE30B9E65800796C77 /* BearHttpServer.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6588D3AB30B7CD180024844B /* BearHttpServer.framework */; };
 		6588D3B730B7CD190024844B /* BearHttpServer.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6588D3AB30B7CD180024844B /* BearHttpServer.framework */; };
+		FEDC00000000000000000001 /* BearHttpServer.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6588D3AB30B7CD180024844B /* BearHttpServer.framework */; };
+		FEDC00000000000000000002 /* BearHttpServer.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 6588D3AB30B7CD180024844B /* BearHttpServer.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -34,11 +36,33 @@
 			remoteGlobalIDString = 6588D3AA30B7CD180024844B;
 			remoteInfo = BearHttpServer;
 		};
+		FEDC00000000000000000004 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6588D3A230B7CD180024844B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6588D3AA30B7CD180024844B;
+			remoteInfo = BearHttpServer;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		FEDC00000000000000000003 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				FEDC00000000000000000002 /* BearHttpServer.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		2803A28C30B9D98A00796C77 /* BearHttpServerRouting.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BearHttpServerRouting.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		2803A29430B9D98A00796C77 /* BearHttpServerRoutingTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BearHttpServerRoutingTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2803A38930BAE07700796C77 /* BearHttpServerDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BearHttpServerDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6588D3AB30B7CD180024844B /* BearHttpServer.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BearHttpServer.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6588D3B630B7CD190024844B /* BearHttpServerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BearHttpServerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		6588D3C530B7CD190024844B /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
@@ -53,6 +77,11 @@
 		2803A29830B9D98A00796C77 /* BearHttpServerRoutingTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = BearHttpServerRoutingTests;
+			sourceTree = "<group>";
+		};
+		2803A38A30BAE07700796C77 /* BearHttpServerDemo */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BearHttpServerDemo;
 			sourceTree = "<group>";
 		};
 		6588D3AD30B7CD180024844B /* BearHttpServer */ = {
@@ -84,6 +113,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2803A38630BAE07700796C77 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FEDC00000000000000000001 /* BearHttpServer.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6588D3A830B7CD180024844B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -112,6 +149,7 @@
 		6588D3A130B7CD180024844B = {
 			isa = PBXGroup;
 			children = (
+				2803A38A30BAE07700796C77 /* BearHttpServerDemo */,
 				6588D3C530B7CD190024844B /* Package.swift */,
 				6588D3AD30B7CD180024844B /* BearHttpServer */,
 				6588D3BA30B7CD190024844B /* BearHttpServerTests */,
@@ -129,6 +167,7 @@
 				6588D3B630B7CD190024844B /* BearHttpServerTests.xctest */,
 				2803A28C30B9D98A00796C77 /* BearHttpServerRouting.framework */,
 				2803A29430B9D98A00796C77 /* BearHttpServerRoutingTests.xctest */,
+				2803A38930BAE07700796C77 /* BearHttpServerDemo.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -200,6 +239,30 @@
 			productReference = 2803A29430B9D98A00796C77 /* BearHttpServerRoutingTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		2803A38830BAE07700796C77 /* BearHttpServerDemo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2803A39530BAE07800796C77 /* Build configuration list for PBXNativeTarget "BearHttpServerDemo" */;
+			buildPhases = (
+				2803A38530BAE07700796C77 /* Sources */,
+				2803A38630BAE07700796C77 /* Frameworks */,
+				2803A38730BAE07700796C77 /* Resources */,
+				FEDC00000000000000000003 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FEDC00000000000000000005 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				2803A38A30BAE07700796C77 /* BearHttpServerDemo */,
+			);
+			name = BearHttpServerDemo;
+			packageProductDependencies = (
+			);
+			productName = BearHttpServerDemo;
+			productReference = 2803A38930BAE07700796C77 /* BearHttpServerDemo.app */;
+			productType = "com.apple.product-type.application";
+		};
 		6588D3AA30B7CD180024844B /* BearHttpServer */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6588D3BF30B7CD190024844B /* Build configuration list for PBXNativeTarget "BearHttpServer" */;
@@ -262,6 +325,9 @@
 					2803A29330B9D98A00796C77 = {
 						CreatedOnToolsVersion = 27.2;
 					};
+					2803A38830BAE07700796C77 = {
+						CreatedOnToolsVersion = 27.2;
+					};
 					6588D3AA30B7CD180024844B = {
 						CreatedOnToolsVersion = 26.2;
 					};
@@ -288,6 +354,7 @@
 				6588D3B530B7CD190024844B /* BearHttpServerTests */,
 				2803A28B30B9D98A00796C77 /* BearHttpServerRouting */,
 				2803A29330B9D98A00796C77 /* BearHttpServerRoutingTests */,
+				2803A38830BAE07700796C77 /* BearHttpServerDemo */,
 			);
 		};
 /* End PBXProject section */
@@ -301,6 +368,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		2803A29230B9D98A00796C77 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2803A38730BAE07700796C77 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -338,6 +412,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2803A38530BAE07700796C77 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6588D3A730B7CD180024844B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -369,6 +450,11 @@
 			isa = PBXTargetDependency;
 			target = 6588D3AA30B7CD180024844B /* BearHttpServer */;
 			targetProxy = 6588D3B830B7CD190024844B /* PBXContainerItemProxy */;
+		};
+		FEDC00000000000000000005 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6588D3AA30B7CD180024844B /* BearHttpServer */;
+			targetProxy = FEDC00000000000000000004 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -514,6 +600,94 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = "$(RECOMMENDED_XROS_DEPLOYMENT_TARGET)";
+			};
+			name = Release;
+		};
+		2803A39330BAE07800796C77 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "BearHttpServerDemo-Info.plist";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于访问局域网中的 BearHttpServer 演示服务";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bear.BearHttpServerDemo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = "$(RECOMMENDED_XROS_DEPLOYMENT_TARGET)";
+			};
+			name = Debug;
+		};
+		2803A39430BAE07800796C77 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "BearHttpServerDemo-Info.plist";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于访问局域网中的 BearHttpServer 演示服务";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bear.BearHttpServerDemo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -820,6 +994,15 @@
 			buildConfigurations = (
 				2803A29F30B9D98A00796C77 /* Debug */,
 				2803A2A030B9D98A00796C77 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2803A39530BAE07800796C77 /* Build configuration list for PBXNativeTarget "BearHttpServerDemo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2803A39330BAE07800796C77 /* Debug */,
+				2803A39430BAE07800796C77 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
