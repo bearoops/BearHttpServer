@@ -140,17 +140,23 @@ struct StreamingBodyTests {
     @Test func streamingResponseHasBackPressure() async throws {
         let order = EventLog()
         let pulls = Counter()
+        let streamDrained = Signal()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, bodyStream: {
                 let n = await pulls.bumpAndGet()
                 await order.append("pull-\(n)")
+                if n >= 3 { await streamDrained.fire() }
                 return n < 3 ? Data("chunk\(n + 1)".utf8) : nil
             })
         }
         let port = try await server.start()
         defer { Task { await server.stop() } }
         _ = try await rawResponse(port: port)
-        #expect(await order.get() == ["pull-0", "pull-1", "pull-2", "pull-3"])
+        // The client may read a partial response before the final pull (which
+        // returns nil) happens, so wait for the stream to be fully drained.
+        await streamDrained.wait()
+        let events = await order.get()
+        #expect(events == ["pull-0", "pull-1", "pull-2", "pull-3"])
     }
 
     @Test func streamingResponseDecodesCorrectlyOverURLSession() async throws {
