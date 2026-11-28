@@ -116,18 +116,18 @@ struct StreamingBodyTests {
         let index = Counter()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, headers: ["content-type": "text/plain"], bodyStream: {
-                if await index.bumpAndGet() < chunks.count {
-                    let i = await index.value - 1
-                    return Data(chunks[i].utf8)
-                }
-                return nil
+                let i = await index.bumpAndGet()
+                return i < chunks.count ? Data(chunks[i].utf8) : nil
             })
         }
         let port = try await server.start()
         defer { Task { await server.stop() } }
+        // Chunks are sent in separate writes; drain until close so a partial
+        // first receive cannot hide later chunks.
         let response = try await rawResponse(
             port: port,
-            request: "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            request: "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            readUntilComplete: true
         )
         #expect(response.hasPrefix("HTTP/1.1 200 OK"))
         #expect(response.contains("transfer-encoding: chunked"))

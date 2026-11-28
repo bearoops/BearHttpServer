@@ -14,7 +14,8 @@ case missingCertificate
 
 func rawResponse(
     port: UInt16,
-    request: String = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    request: String = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    readUntilComplete: Bool = false
 ) async throws -> String {
     let connection = NWConnection(
         host: "127.0.0.1",
@@ -37,15 +38,32 @@ func rawResponse(
         )
     }
 
-    let data = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data?, Error>) in
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, _, error in
-            if let error {
-                continuation.resume(throwing: error)
-            } else {
-                continuation.resume(returning: data)
+    func receiveOnce() async throws -> (Data?, Bool) {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data?, Bool), Error>) in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: (data, isComplete))
+                }
             }
         }
     }
+
+    // Streaming responses are written as several separate sends. A single
+    // receive may return only the headers, so callers asserting on the full
+    // body opt into draining until the peer closes the connection.
+    if readUntilComplete {
+        var buffer = Data()
+        while true {
+            let (data, isComplete) = try await receiveOnce()
+            if let data { buffer.append(data) }
+            if isComplete { break }
+        }
+        return String(decoding: buffer, as: UTF8.self)
+    }
+
+    let (data, _) = try await receiveOnce()
     return String(decoding: data ?? Data(), as: UTF8.self)
 }
 
