@@ -13,7 +13,7 @@ struct StreamingBodyTests {
     // MARK: - Request side
 
     @Test func streamingHandlerReadsBodyInChunks() async throws {
-        let received = LockedData()
+        let received = ChunkCollector()
         let server = HTTPServer(streamingHandler: { _, stream in
             while let chunk = try? await stream.read() {
                 await received.append(chunk)
@@ -72,7 +72,7 @@ struct StreamingBodyTests {
     }
 
     @Test func streamingBodyOverLimitFailsRead() async throws {
-        let errorSeen = LockedFlag()
+        let errorSeen = Flag()
         var configuration = HTTPServerConfiguration.localhost
         configuration.maxBodyBytes = 5
         let server = HTTPServer(configuration: configuration) { _, stream in
@@ -113,7 +113,7 @@ struct StreamingBodyTests {
 
     @Test func streamingResponseSendsMultipleChunks() async throws {
         let chunks = ["hello ", "streamed ", "world"]
-        let index = LockedCounter()
+        let index = Counter()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, headers: ["content-type": "text/plain"], bodyStream: {
                 if await index.bumpAndGet() < chunks.count {
@@ -138,8 +138,8 @@ struct StreamingBodyTests {
     }
 
     @Test func streamingResponseHasBackPressure() async throws {
-        let order = LockedStrings()
-        let pulls = LockedCounter()
+        let order = EventLog()
+        let pulls = Counter()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, bodyStream: {
                 let n = await pulls.bumpAndGet()
@@ -155,7 +155,7 @@ struct StreamingBodyTests {
 
     @Test func streamingResponseDecodesCorrectlyOverURLSession() async throws {
         let chunks = ["stream-", "ing-", "works"]
-        let counter = LockedCounter()
+        let counter = Counter()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, bodyStream: {
                 let i = await counter.bumpAndGet()
@@ -189,7 +189,7 @@ struct StreamingBodyTests {
     }
 
     @Test func http10StreamingResponseFallsBackToContentLength() async throws {
-        let sent = LockedFlag()
+        let sent = Flag()
         let server = HTTPServer { _ in
             HTTPResponse(status: .ok, bodyStream: {
                 if await sent.get() { return nil }
@@ -212,26 +212,26 @@ struct StreamingBodyTests {
 
 // MARK: - Thread-safe test utilities
 
-private actor LockedData {
+private actor ChunkCollector {
     private var storage = Data()
     func append(_ chunk: Data) { storage.append(chunk) }
     func get() -> Data { storage }
 }
 
-private actor LockedFlag {
+private actor Flag {
     private var flag = false
     func set() { flag = true }
     func get() -> Bool { flag }
 }
 
-private actor LockedCounter {
+private actor Counter {
     private var n = 0
     func bump() { n += 1 }
     func bumpAndGet() -> Int { n += 1; return n - 1 }
     var value: Int { n }
 }
 
-private actor LockedStrings {
+private actor EventLog {
     private var items: [String] = []
     func append(_ s: String) { items.append(s) }
     func get() -> [String] { items }
